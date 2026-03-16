@@ -11,6 +11,8 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cassert>
+#include <unistd.h>
+#include <sys/wait.h>
 
 // ── Value type ───────────────────────────────────────────────────────────────
 // Stack cells can hold integers or strings (for future extension).
@@ -112,6 +114,19 @@ private:
 		return {true, neg ? -n : n};
 	}
 
+	void edit_file(std::string filename) {
+    const char* editor = std::getenv("EDITOR");
+    if (!editor) editor = "vi";
+		
+    pid_t pid = fork();
+    if (pid == 0) {
+			execlp(editor, editor, filename.c_str(), nullptr);
+			_exit(1);
+    } else if (pid > 0) {
+			waitpid(pid, nullptr, 0);
+    }
+	}
+        
 	void load_file(std::string filename) {
 		std::ifstream f(filename);
 		if (!f) { std::cout << "Cannot open " << filename << "\n"; return; }
@@ -367,6 +382,12 @@ private:
 					continue;
 				}
 
+				if (t == "edit") {
+					std::string filename = tokens[++i];
+					edit_file(filename);
+					continue;
+				}
+                                
 				if (t == "see") {
 					std::string name = lower(tokens[++i]);
 					auto it = dict.find(name);
