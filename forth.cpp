@@ -1,5 +1,3 @@
-// forth.cpp — C++ port of the Pike/Ruby Forth interpreter
-// Compile: g++ -std=c++17 -o forth forth.cpp
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -14,7 +12,6 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-// ── Value type ───────────────────────────────────────────────────────────────
 // Stack cells can hold integers or strings (for future extension).
 using Value = std::variant<int, std::string>;
 
@@ -23,7 +20,7 @@ static int as_int(const Value& v) {
 	throw std::runtime_error("Expected integer on stack");
 }
 
-// ── Instruction ──────────────────────────────────────────────────────────────
+// - Instruction --------------------------------------------------------------
 struct Ins {
 	std::string op;
 	int         ival  = 0;
@@ -36,7 +33,7 @@ static Ins make(std::string op, int v)                 { Ins i; i.op=op; i.ival=
 static Ins make(std::string op, std::string s)         { Ins i; i.op=op; i.sval=s; return i; }
 static Ins make(std::string op, int v, std::string s)  { Ins i; i.op=op; i.ival=v; i.sval=s; return i; }
 
-// ── Dict entry ───────────────────────────────────────────────────────────────
+// -- Dict entry ---------------------------------------------------------------
 struct Entry {
 	enum Kind { PRIM, WORD, DEFINING, CREATE } kind;
 	std::function<void()>    prim;
@@ -45,7 +42,7 @@ struct Entry {
 	int                      body_addr = 0; // CREATE
 };
 
-// ── Forth interpreter ─────────────────────────────────────────────────────────
+// -- Forth interpreter ---------------------------------------------------------
 class Forth {
 public:
 	Forth() : heap(1, 10) {}  // heap[0] = BASE = 10
@@ -70,7 +67,7 @@ private:
 	// Locals frames live on a separate typed stack to keep rstack simple
 	std::vector<std::vector<int>> lframes;
 
-	// ── stack helpers ──────────────────────────────────────────────────────
+	// -- stack helpers ------------------------------------------------------
 	Value pop() {
 		if (stack.empty()) throw std::runtime_error("Stack underflow");
 		Value v = stack.back(); stack.pop_back(); return v;
@@ -87,7 +84,7 @@ private:
 
 	void emit(Ins ins) { prog.push_back(ins); }
 
-	// ── number helpers ─────────────────────────────────────────────────────
+	// -- number helpers -----------------------------------------------------
 	std::string format_int(int n, int base) {
 		if (n == 0) return "0";
 		const char* digits = "0123456789abcdef";
@@ -158,7 +155,7 @@ private:
 		return out;
 	}
 
-	// ── bytecode runner ────────────────────────────────────────────────────
+	// -- bytecode runner ----------------------------------------------------
 	void run(const std::vector<Ins>& code) {
 		for (int pc = 0; pc < (int)code.size(); pc++) {
 			const Ins& ins = code[pc];
@@ -224,7 +221,7 @@ private:
 		throw std::runtime_error("Unknown word: " + w);
 	}
 
-	// ── primitives ─────────────────────────────────────────────────────────
+	// -- primitives ---------------------------------------------------------
 	void init_prims() {
 		auto prim = [&](std::string name, std::function<void()> fn) {
 			Entry e; e.kind = Entry::PRIM; e.prim = fn;
@@ -313,7 +310,7 @@ private:
 		});
 	}
 
-	// ── string literal collector ───────────────────────────────────────────
+	// -- string literal collector -------------------------------------------
 	// Returns {string, new_index}
 	std::pair<std::string,int> collect_string(const std::vector<std::string>& tokens, int i) {
 		std::string result;
@@ -328,7 +325,7 @@ private:
 		}
 	}
 
-	// ── SEE decompiler helper ──────────────────────────────────────────────
+	// -- SEE decompiler helper ----------------------------------------------
 	void see_code(const std::vector<Ins>& code) {
 		for (auto& ins : code) {
 			if      (ins.op=="lit")          std::cout << "  lit " << ins.ival << "\n";
@@ -351,7 +348,7 @@ private:
 		}
 	}
 
-	// ── token processor ────────────────────────────────────────────────────
+	// -- token processor ----------------------------------------------------
 	void process(const std::vector<std::string>& tokens) {
 		for (int i = 0; i < (int)tokens.size(); i++) {
 			std::string t = lower(tokens[i]);
@@ -441,7 +438,7 @@ private:
 				continue;
 			}
 
-			// ── compile mode ──────────────────────────────────────────────
+			// -- compile mode ----------------------------------------------
 
 			if (t == ";") {
 				if (!locals.empty()) emit(make("locals-exit"));
@@ -535,12 +532,13 @@ private:
 	}
 };
 
-// ── REPL ──────────────────────────────────────────────────────────────────────
+// -- REPL ----------------------------------------------------------------------
 void Forth::repl() {
 	init_prims();
 	std::cout << "Mini C++ Forth\n";
-	
-	load_file("stdlib.fs");
+	std::string dir = DIR; // Access the preprocessor macro as a string
+  	std::string filepath = trim(dir) + "/stdlib.fs";
+	load_file(filepath);
 	
 	while (true) {
 		std::cout << "> " << std::flush;
