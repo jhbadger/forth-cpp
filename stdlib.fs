@@ -2,7 +2,7 @@
 : variable create 1 allot does> ;
 : constant create ! does> @ ;
 : ? @ . ;
-
+: array create cells allot does> cells + ;
 
 \ - Boolean constants ----------------------------------------------
 -1 constant true
