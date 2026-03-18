@@ -2,6 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <functional>
@@ -102,7 +103,7 @@ private:
 		if (s.empty()) return {false,0};
 		int n = 0;
 		for (char c : s) {
-			const char* p = std::strchr("0123456789abcdef", std::tolower(c));
+			const char* p = strchr("0123456789abcdef", std::tolower(c));
 			if (!p) return {false,0};
 			int d = (int)(p - "0123456789abcdef");
 			if (d >= base) return {false,0};
