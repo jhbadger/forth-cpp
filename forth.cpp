@@ -279,6 +279,7 @@ private:
 		});
 
 		prim("cell+", [&]{ push(popi()+1); });
+		prim("cell",  [&]{ push(1); });
     prim("cells", [&]{ /* no-op */ });
     prim(",",     [&]{ heap.push_back(popi()); });
 		prim("here",  [&]{ push(heap.size()); });
