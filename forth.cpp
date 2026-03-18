@@ -321,12 +321,13 @@ private:
 
 	// -- string literal collector -------------------------------------------
 	// Returns {string, new_index}
-	std::pair<std::string,int> collect_string(const std::vector<std::string>& tokens, int i) {
+	std::pair<std::string,int> collect_string(const std::vector<std::string>& tokens, int i, char delim) {
 		std::string result;
 		while (true) {
 			i++;
-			if (i >= (int)tokens.size()) throw std::runtime_error("Unterminated .\" string");
-			if (tokens[i].back() == '"') {
+			if (i >= (int)tokens.size())
+				throw std::runtime_error("Unterminated .\" string");
+			if (tokens[i].back() == delim) {
 				result += tokens[i].substr(0, tokens[i].size()-1);
 				return {result, i};
 			}
@@ -373,8 +374,10 @@ private:
 			}
 
 			// String literal
-			if (t == ".\"") {
-				auto [s, ni] = collect_string(tokens, i);
+			if (t == ".\"" || t == ".(") {
+				char delim = t[1];
+        if (delim == '(') delim = ')'; // match parens 
+				auto [s, ni] = collect_string(tokens, i, delim);
 				i = ni;
 				if (!compiling) std::cout << s;
 				else            emit(make("strlit", s));
