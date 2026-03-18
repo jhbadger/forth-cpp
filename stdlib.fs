@@ -4,7 +4,7 @@
 : constant create , does> @ ;
 : ? @ . ;
 : +!  dup @ rot + swap ! ;  
-
+: array create does> + ;
 
 \ - Boolean constants ----------------------------------------------
 -1 constant true
