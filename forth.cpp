@@ -277,8 +277,9 @@ private:
     prim(",",     [&]{ heap.push_back(popi()); });
 		prim("here",  [&]{ push(heap.size()); });
 		prim("c,",    [&]{ heap.push_back(popi()); });		 
-                
-		// Output
+    prim("create", [&]{ /* no-op just to add to words */ });
+
+    // Output
 		prim(".",    [&]{ std::cout << format_int(popi(), heap[base_addr]) << " "; });
 		prim("emit", [&]{ std::cout << (char)popi(); });
 		prim("cr",   [&]{ std::cout << "\n"; });
@@ -311,6 +312,11 @@ private:
 			for (auto& n : names) std::cout << n << " ";
 			std::cout << "\n";
 		});
+    // Misc
+		prim("include", [&] { /* no-op just to add to words */ });
+    prim("edit", [&] { /* no-op just to add to words */ });            
+    prim("see", [&] { /* no-op just to add to words */ });
+		prim("bye", [&]{ /* no-op just to add to words */ });                
 	}
 
 	// -- string literal collector -------------------------------------------
@@ -376,7 +382,7 @@ private:
 			}
 
 			if (!compiling) {
-				if (t == "load") {
+				if (t == "include") {
 					std::string filename = tokens[++i];
           load_file(filename);          
 					continue;
