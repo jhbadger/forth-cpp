@@ -397,6 +397,15 @@ private:
 					edit_file(filename);
 					continue;
 				}
+				if (t == "create") {
+					std::string new_name = lower(tokens[++i]); // Grab "sizes"
+					Entry ne;
+					ne.kind = Entry::CREATE;
+					ne.body_addr = (int)heap.size();
+					// No does_code yet; it just returns its address by default
+					dict[new_name] = ne;
+					continue;
+				}
 				if (t == "see") {
 					std::string name = lower(tokens[++i]);
 					auto it = dict.find(name);
