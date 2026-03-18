@@ -1,24 +1,20 @@
-# Compiler and flags
 CXX = g++
-DIR = $(shell pwd) # change if you want a different directory for stdlib.fs
+PREFIX = $(HOME)
+DIR = $(shell pwd)
 CXXFLAGS = -O -DDIR=\""$(DIR)\"" -std=c++17 -o forth
-
-# Source files
-SRC = forth.cpp
-
-# Target executable
 TARGET = forth
+SOURCE = forth.cpp
+PREFIX = $(HOME)
 
-# Default rule: builds the executable
 all: $(TARGET)
 
-# Build rule for the executable
-$(TARGET): $(SRC)
-	$(CXX) $(CXXFLAGS) $(SRC)
+$(TARGET): $(SOURCE)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SOURCE)
 
-# Clean rule: removes the executable
+install: $(TARGET)
+	cp $(TARGET) $(PREFIX)/bin
+
 clean:
 	rm -f $(TARGET)
 
-# Phony targets (targets that don't represent files)
 .PHONY: all clean
