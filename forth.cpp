@@ -273,8 +273,11 @@ private:
 		});
 
 		prim("cell+", [&]{ push(popi()+1); });
-		prim("cells",  [&]{ /* no-op */ });
-
+    prim("cells", [&]{ /* no-op */ });
+    prim(",",     [&]{ heap.push_back(popi()); });
+		prim("here",  [&]{ push(heap.size()); });
+		prim("c,",    [&]{ heap.push_back(popi()); });		 
+                
 		// Output
 		prim(".",    [&]{ std::cout << format_int(popi(), heap[base_addr]) << " "; });
 		prim("emit", [&]{ std::cout << (char)popi(); });
@@ -384,7 +387,17 @@ private:
 					edit_file(filename);
 					continue;
 				}
-                                
+        if (t == "create") {
+					std::string new_name = tokens[++i];
+          int body_addr = heap.size();
+          heap.push_back(0);
+					Entry ne;
+					ne.kind      = Entry::CREATE;
+					ne.body_addr = body_addr;
+					dict[new_name] = ne;
+          push(body_addr);
+          continue;                        
+        }                        
 				if (t == "see") {
 					std::string name = lower(tokens[++i]);
 					auto it = dict.find(name);
