@@ -13,6 +13,11 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+#ifdef USE_READLINE
+#include <readline/readline.h>
+#include <readline/history.h>
+#endif
+
 // Stack cells can hold integers or strings (for future extension).
 using Value = std::variant<int, std::string>;
 
@@ -560,26 +565,42 @@ void Forth::repl() {
 	std::string dir = DIR; // Access the preprocessor macro as a string
   	std::string filepath = trim(dir) + "/stdlib.fs";
 	load_file(filepath);
-	
+
 	while (true) {
+#ifdef USE_READLINE
+		// readline() provides the prompt and returns a malloc'd char*
+		char* input = readline("> ");
+		if (!input) break; // Handle EOF (Ctrl+D)
+
+		std::string line(input);
+		if (!line.empty()) {
+			add_history(input);
+		}
+		free(input); // Readline requires manual memory management
+#else
+		// Fallback to standard C++ I/O
 		std::cout << "> " << std::flush;
 		std::string line;
 		if (!std::getline(std::cin, line)) break;
+#endif
+		
 		line = trim(line);
 		if (line == "bye") break;
 		if (line.empty()) continue;
+		
 		try {
 			process(split(line));
 			std::cout << " ok\n";
 		} catch (std::exception& e) {
 			std::cout << "Error: " << e.what() << "\n";
+			// ... reset state logic ...
 			stack.clear();
 			rstack.clear();
 			lframes.clear();
 			cstack.clear();
 			prog.clear();
 			compiling = false;
-			does_pos  = -1;
+			does_pos = -1;
 		}
 	}
 }
