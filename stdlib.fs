@@ -1,6 +1,7 @@
 \ -- Variable and Constant defined in Forth ------------------------
-: variable create 1 allot does> ;
-: constant create ! does> @ ;
+
+: variable create 0 , does> ; 
+: constant create , does> @ ;
 : ? @ . ;
 : +!  dup @ rot + swap ! ;  
 

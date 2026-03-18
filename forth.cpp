@@ -278,7 +278,7 @@ private:
     prim(",",     [&]{ heap.push_back(popi()); });
 		prim("here",  [&]{ push(heap.size()); });
 		prim("c,",    [&]{ heap.push_back(popi()); });		 
-    prim("create", [&]{ /* no-op just to add to words */ });
+    prim("create",[&]{ /* no-op */ });
 
     // Output
 		prim(".",    [&]{ std::cout << format_int(popi(), heap[base_addr]) << " "; });
@@ -397,17 +397,6 @@ private:
 					edit_file(filename);
 					continue;
 				}
-        if (t == "create") {
-					std::string new_name = tokens[++i];
-          int body_addr = heap.size();
-          heap.push_back(0);
-					Entry ne;
-					ne.kind      = Entry::CREATE;
-					ne.body_addr = body_addr;
-					dict[new_name] = ne;
-          push(body_addr);
-          continue;                        
-        }                        
 				if (t == "see") {
 					std::string name = lower(tokens[++i]);
 					auto it = dict.find(name);
@@ -444,19 +433,20 @@ private:
 				// Defining word invocation
 				auto it = dict.find(t);
 				if (it != dict.end() && it->second.kind == Entry::DEFINING) {
-					std::string new_name = lower(tokens[++i]);
+					std::string new_name = lower(tokens[++i]); 
 					int body_addr = (int)heap.size();
-					heap.push_back(0);
+    
+					// Create the new child word entry
 					Entry ne;
 					ne.kind      = Entry::CREATE;
 					ne.body_addr = body_addr;
-					ne.does_code = it->second.does_code;
+					ne.does_code = it->second.does_code; // Inherit the behavior after does>
 					dict[new_name] = ne;
-					push(body_addr);
-					run(it->second.code);
+
+					run(it->second.code); 
 					continue;
 				}
-
+				
 				run_word(t);
 				continue;
 			}
@@ -484,8 +474,7 @@ private:
 			}
 
 			if (t == "does>") { does_pos = (int)prog.size(); continue; }
-			if (t == "create") continue;
-
+			
 			if (t == "recurse") { emit(make("call", current)); continue; }
 
 			if (t == "if")   { emit(make("0branch",0)); cstack.push_back((int)prog.size()-1); continue; }
