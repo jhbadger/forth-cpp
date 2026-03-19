@@ -194,7 +194,6 @@ private:
 				int limit = as_int(rstack.back());
 				idx++;
 				if (idx < limit) {
-					rstack.back() = limit;
 					rpush(idx);
 					pc = ins.ival - 1;
 				} else {
@@ -300,10 +299,16 @@ private:
 		});
 
 		// Loop index
-		prim("i", [&]{
+		prim("i", [&] {
 			// top of rstack is current index (pushed after limit)
 			push(as_int(rstack.back()));
 		});
+    prim("j", [&]{
+			// j is the index of the *outer* loop, sitting 2 slots below the top
+			if (rstack.size() < 3)
+        throw std::runtime_error("j used outside nested loop");
+			push(as_int(rstack[rstack.size() - 3]));
+		});            
 
 		// Allot
 		prim("allot", [&]{
