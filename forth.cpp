@@ -555,7 +555,7 @@ void see_code(const std::vector<Ins>& code) {
 				cstack.push_back((int)prog.size()-1);
 				continue;
 			}
-			if (t == "then") {
+			if (t == "then" || t == "endif") {
 				int prev = cstack.back(); cstack.pop_back();
 				prog[prev].ival = (int)prog.size();
 				continue;
