@@ -295,6 +295,26 @@ private:
     prim(",",     [&]{ heap.push_back(popi()); });
 		prim("here",  [&]{ push(heap.size()); });
     prim("create",[&]{ /* no-op */ });
+		prim("fill",  [&]{
+			int c=popi();int l=popi();int a=popi();
+			for(int i=a; i<a+l;i++){
+				if (i<0||i>=(int)heap.size())
+					throw std::runtime_error("Invalid heap address "+
+																	 std::to_string(i));
+				else heap[i]=c;
+			}
+		});
+		prim("dump",  [&]{
+			int l=popi();int a=popi();
+			std::cout << a << " :";
+			for(int i=a; i<a+l;i++){
+				if (i<0||i>=(int)heap.size())
+					throw std::runtime_error("Invalid heap address "+
+																	 std::to_string(i));
+				else std::cout << " " << heap[i];
+			}
+			std::cout << "\n";
+		});
 		// c words are functionally the same in this forth
 		dict["c!"] = dict["!"];
 		dict["c@"] = dict["@"];
