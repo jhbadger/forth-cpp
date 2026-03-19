@@ -6,6 +6,13 @@
 : +!  dup @ rot + swap ! ;  
 : array create does> swap cell * + ;
 
+: print-array ( addr len -- )
+  0 do
+    dup i cells +  ( addr addr[i] )
+    @ .            ( addr value )
+  loop
+  drop ;
+
 \ - Boolean constants ----------------------------------------------
 -1 constant true
 0  constant false
