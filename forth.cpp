@@ -289,15 +289,16 @@ private:
 			if (addr<0||addr>=(int)heap.size()) throw std::runtime_error("Invalid heap address "+std::to_string(addr));
 			heap[addr] = val;
 		});
-
 		prim("cell+", [&]{ push(popi()+1); });
 		prim("cell",  [&]{ push(1); });
     prim("cells", [&]{ /* no-op */ });
     prim(",",     [&]{ heap.push_back(popi()); });
 		prim("here",  [&]{ push(heap.size()); });
-		prim("c,",    [&]{ heap.push_back(popi()); });		 
     prim("create",[&]{ /* no-op */ });
-
+		// c words are functionally the same in this forth
+		dict["c!"] = dict["!"];
+		dict["c@"] = dict["@"];
+		dict["c,"] = dict[","];
     // Output
 		prim(".",    [&]{ std::cout << format_int(popi(), heap[base_addr]) << " "; });
 		prim("emit", [&]{ std::cout << (char)popi(); });
