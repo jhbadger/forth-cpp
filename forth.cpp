@@ -201,6 +201,19 @@ private:
 				}
 			} else if (ins.op == "push-addr") {
 				push(ins.ival);
+			} else if (ins.op == "(+loop)") {
+				int step  = popi();
+				int idx   = as_int(rstack.back()); rstack.pop_back();
+				int limit = as_int(rstack.back());
+				idx += step;
+				// continues if we haven't crossed the limit in the step direction
+				if ((step > 0 && idx < limit) || (step < 0 && idx >= limit)) {
+					rstack.back() = limit;
+					rpush(idx);
+					pc = ins.ival - 1;
+				} else {
+					rstack.pop_back(); // remove limit
+				}
 			}
 		}
 	}
@@ -348,27 +361,43 @@ private:
 	}
 
 	// -- SEE decompiler helper ----------------------------------------------
-	void see_code(const std::vector<Ins>& code) {
-		for (auto& ins : code) {
-			if      (ins.op=="lit")          std::cout << "  lit " << ins.ival << "\n";
-			else if (ins.op=="strlit")       std::cout << "  .\" " << ins.sval << "\"\n";
-			else if (ins.op=="call")         std::cout << "  " << ins.sval << "\n";
-			else if (ins.op=="branch")       std::cout << "  branch " << ins.ival << "\n";
-			else if (ins.op=="0branch")      std::cout << "  0branch " << ins.ival << "\n";
-			else if (ins.op=="(do)")         std::cout << "  do\n";
-			else if (ins.op=="(loop)")       std::cout << "  loop\n";
-			else if (ins.op=="exit")         std::cout << "  exit\n";
-			else if (ins.op=="locals-enter") {
-				std::cout << "  { ";
-				for (auto& n : ins.names) std::cout << n << " ";
-				std::cout << "-- }\n";
-			}
-			else if (ins.op=="locals-exit")  {}
-			else if (ins.op=="local@")       std::cout << "  " << ins.sval << "\n";
-			else if (ins.op=="local!")       std::cout << "  -> " << ins.sval << "\n";
-			else                             std::cout << "  [" << ins.op << " " << ins.ival << " " << ins.sval << "]\n";
-		}
+void see_code(const std::vector<Ins>& code) {
+	using SeeFunc = std::function<void(const Ins&)>;
+        static const std::unordered_map<std::string, SeeFunc> table = {
+          {"lit",
+           [](const Ins &i) { std::cout << "  lit " << i.ival << "\n"; }},
+          {"strlit",
+           [](const Ins &i) { std::cout << "  .\" " << i.sval << "\"\n"; }},
+          {"call", [](const Ins &i) { std::cout << "  " << i.sval << "\n"; }},
+          {"branch",
+           [](const Ins &i) { std::cout << "  branch -> " << i.ival << "\n"; }},
+          {"0branch",
+           [](const Ins &i) {
+             std::cout << "  0branch -> " << i.ival << "\n";
+           }},
+          {"(do)", [](const Ins &) { std::cout << "  do\n"; }},
+          {"(loop)",
+           [](const Ins &i) { std::cout << "  loop -> " << i.ival << "\n"; }},
+					{"(+loop)", [](const Ins& i){ std::cout << "  +loop -> " << i.ival << "\n"; }},
+          {"exit",         [](const Ins&)  { std::cout << "  exit\n"; }},
+		{"locals-enter", [](const Ins& i){
+			std::cout << "  { ";
+			for (auto& n : i.names) std::cout << n << " ";
+			std::cout << "-- }\n";
+		}},
+		{"locals-exit",  [](const Ins&)  {}},
+		{"local@",       [](const Ins& i){ std::cout << "  " << i.sval << "\n"; }},
+		{"local!",       [](const Ins& i){ std::cout << "  -> " << i.sval << "\n"; }},
+	};
+	
+	for (auto& ins : code) {
+		auto it = table.find(ins.op);
+		if (it != table.end())
+			it->second(ins);
+		else
+			std::cout << "  [unknown: " << ins.op << " " << ins.ival << " " << ins.sval << "]\n";
 	}
+}
 
 	// -- token processor ----------------------------------------------------
 	void process(const std::vector<std::string>& tokens) {
@@ -516,7 +545,11 @@ private:
 				emit(make("(loop)", addr));
 				continue;
 			}
-
+			if (t == "+loop") {
+				int addr = cstack.back(); cstack.pop_back();
+				emit(make("(+loop)", addr));
+				continue;
+			}
 			if (t == "{") {
 				std::vector<std::string> names;
 				while (true) {
