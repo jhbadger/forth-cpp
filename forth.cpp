@@ -2,6 +2,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <variant>
 #include <cstring>
 #include <string>
 #include <unordered_map>
