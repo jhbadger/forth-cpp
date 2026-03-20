@@ -6,7 +6,6 @@
 #include <string>
 #include <unordered_map>
 #include <functional>
-#include <variant>
 #include <stdexcept>
 #include <algorithm>
 #include <cassert>
@@ -45,7 +44,8 @@ struct Entry {
 	std::function<void()>    prim;
 	std::vector<Ins>         code;      // init code (WORD/DEFINING)
 	std::vector<Ins>         does_code; // DEFINING does> / CREATE body
-	int                      body_addr = 0; // CREATE
+	int body_addr = 0;                  // CREATE
+  bool                     is_immediate = false;      
 };
 
 // -- Forth interpreter ---------------------------------------------------------
@@ -60,8 +60,9 @@ private:
 	std::vector<Value>               rstack;    // holds int or vector<Value> (locals frame)
 	std::vector<std::string>         locals;
 	std::unordered_map<std::string, Entry> dict;
-
-	bool        compiling = false;
+	std::vector<std::string> xt_table;
+	bool compiling = false;
+  std::string last_word;      
 	std::string current;
 	std::vector<Ins> prog;
 	std::vector<int> cstack;
@@ -331,7 +332,24 @@ private:
 			}
 			std::cout << "]\n";
 		});
-
+		// Compiling
+		prim("immediate", [&] {
+			if (!last_word.empty()) {
+				dict[last_word].is_immediate = true;
+			}
+		});
+    prim("compile,", [&]{
+			int index = popi();
+			std::string name = xt_table[index];
+			emit(make("call", name)); 
+		});
+		prim("execute", [&]{
+    int index = popi(); 
+    if (index >= 0 && index < xt_table.size()) {
+        run_word(xt_table[index]);
+    }
+		});
+ 
 		// Loop index
 		prim("i", [&] {
 			// top of rstack is current index (pushed after limit)
@@ -467,6 +485,23 @@ void see_code(const std::vector<Ins>& code) {
 					dict[new_name] = ne;
 					continue;
 				}
+        if (t == "'") {
+					std::string name = lower(tokens[++i]);
+					if (dict.count(name)) {
+						auto it = std::find(xt_table.begin(), xt_table.end(), name);
+						int index;
+						if (it == xt_table.end()) {
+							xt_table.push_back(name);
+							index = xt_table.size() - 1;
+						} else {
+							index = std::distance(xt_table.begin(), it);
+						}
+						push(index);
+					} else {
+						throw std::runtime_error("Unknown word: " + name);
+					}
+					continue;
+				}                        
 				if (t == "see") {
 					std::string name = lower(tokens[++i]);
 					auto it = dict.find(name);
@@ -493,7 +528,8 @@ void see_code(const std::vector<Ins>& code) {
 				}
 
 				if (t == ":") {
-					current   = lower(tokens[++i]);
+					current = lower(tokens[++i]);
+          last_word = current;                        
 					prog      = {};
 					does_pos  = -1;
 					compiling = true;
@@ -613,7 +649,15 @@ void see_code(const std::vector<Ins>& code) {
 
 			auto [ok, n] = try_parse(t);
 			if (ok) { emit(make("lit", n)); continue; }
-			emit(make("call", t));
+			auto it = dict.find(t);
+			if (it != dict.end()) {
+				if (it->second.is_immediate) {
+					run_word(t); // Run it NOW even though we are compiling
+				} else {
+					emit(make("call", t)); // Standard behavior: compile for later
+				}
+				continue;
+			}
 		}
 	}
 };
