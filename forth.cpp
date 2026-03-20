@@ -3,7 +3,6 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
-#include <variant>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -18,14 +17,6 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #endif
-
-// Stack cells can hold integers or strings (for future extension).
-using Value = std::variant<int, std::string>;
-
-static int as_int(const Value& v) {
-	if (auto* p = std::get_if<int>(&v)) return *p;
-	throw std::runtime_error("Expected integer on stack");
-}
 
 // - Instruction --------------------------------------------------------------
 struct Ins {
@@ -58,8 +49,8 @@ public:
 	void repl();
 
 private:
-	std::vector<Value>               stack;
-	std::vector<Value>               rstack;    // holds int or vector<Value> (locals frame)
+	std::vector<int>               stack;
+	std::vector<int>               rstack;
 	std::vector<std::string>         locals;
 	std::vector<std::vector<int>>    leave_stack;
 	std::unordered_map<std::string, Entry> dict;
@@ -78,19 +69,17 @@ private:
 	std::vector<std::vector<int>> lframes;
 
 	// -- stack helpers ------------------------------------------------------
-	Value pop() {
+	int pop() {
 		if (stack.empty()) throw std::runtime_error("Stack underflow");
-		Value v = stack.back(); stack.pop_back(); return v;
+		int v = stack.back(); stack.pop_back(); return v;
 	}
-	int popi() { return as_int(pop()); }
-	void push(Value v) { stack.push_back(v); }
 	void push(int v)   { stack.push_back(v); }
 
-	Value rpop() {
+	int rpop() {
 		if (rstack.empty()) throw std::runtime_error("Return stack underflow");
-		Value v = rstack.back(); rstack.pop_back(); return v;
+		int v = rstack.back(); rstack.pop_back(); return v;
 	}
-	void rpush(Value v) { rstack.push_back(v); }
+	void rpush(int v) { rstack.push_back(v); }
 
 	void emit(Ins ins) { prog.push_back(ins); }
 
@@ -178,26 +167,26 @@ private:
 			} else if (ins.op == "branch") {
 				pc = ins.ival - 1;
 			} else if (ins.op == "0branch") {
-				if (popi() == 0) pc = ins.ival - 1;
+				if (pop() == 0) pc = ins.ival - 1;
 			} else if (ins.op == "exit") {
 				return;
-			}	else if (ins.op == "push-str") {
-				push(ins.sval);
+				//}	else if (ins.op == "push-str") {
+				//push(ins.sval);
 			} else if (ins.op == "local@") {
 				push(lframes.back()[ins.ival]);
 			} else if (ins.op == "local!") {
-				lframes.back()[ins.ival] = popi();
+				lframes.back()[ins.ival] = pop();
 			} else if (ins.op == "locals-enter") {
 				lframes.push_back(std::vector<int>(ins.ival, 0));
 			} else if (ins.op == "locals-exit") {
 				lframes.pop_back();
 			} else if (ins.op == "(do)") {
-				int start = popi(), limit = popi();
+				int start = pop(), limit = pop();
 				// encode do-frame as two ints on rstack (limit then index)
 				rpush(limit); rpush(start);
 			} else if (ins.op == "(loop)") {
-				int idx   = as_int(rstack.back()); rstack.pop_back();
-				int limit = as_int(rstack.back());
+				int idx   = rstack.back(); rstack.pop_back();
+				int limit = rstack.back();
 				idx++;
 				if (idx < limit) {
 					rpush(idx);
@@ -208,9 +197,9 @@ private:
 			} else if (ins.op == "push-addr") {
 				push(ins.ival);
 			} else if (ins.op == "(+loop)") {
-				int step  = popi();
-				int idx   = as_int(rstack.back()); rstack.pop_back();
-				int limit = as_int(rstack.back());
+				int step  = pop();
+				int idx   = rstack.back(); rstack.pop_back();
+				int limit = rstack.back();
 				idx += step;
 				// continues if we haven't crossed the limit in the step direction
 				if ((step > 0 && idx < limit) || (step < 0 && idx >= limit)) {
@@ -253,11 +242,11 @@ private:
 		};
 
 		// Arithmetic
-		prim("+",   [&]{ int b=popi(),a=popi(); push(a+b); });
-		prim("-",   [&]{ int b=popi(),a=popi(); push(a-b); });
-		prim("*",   [&]{ int b=popi(),a=popi(); push(a*b); });
-		prim("/",   [&]{ int b=popi(),a=popi(); push(a/b); });
-		prim("mod", [&]{ int b=popi(),a=popi(); push(a%b); });
+		prim("+",   [&]{ int b=pop(),a=pop(); push(a+b); });
+		prim("-",   [&]{ int b=pop(),a=pop(); push(a-b); });
+		prim("*",   [&]{ int b=pop(),a=pop(); push(a*b); });
+		prim("/",   [&]{ int b=pop(),a=pop(); push(a/b); });
+		prim("mod", [&]{ int b=pop(),a=pop(); push(a%b); });
 
 		// Return stack
 		prim(">r",  [&]{ rpush(pop()); });
@@ -266,34 +255,34 @@ private:
 		// Stack ops
 		prim("dup",  [&]{ push(stack.back()); });
 		prim("drop", [&]{ pop(); });
-		prim("swap", [&]{ Value b=pop(),a=pop(); push(b); push(a); });
+		prim("swap", [&]{ int b=pop(),a=pop(); push(b); push(a); });
 		prim("over", [&]{ push(stack[stack.size()-2]); });
-		prim("rot",  [&]{ Value c=pop(),b=pop(),a=pop(); push(b); push(c); push(a); });
+		prim("rot",  [&]{ int c=pop(),b=pop(),a=pop(); push(b); push(c); push(a); });
 
 		// Comparisons
-		prim("=",  [&]{ int b=popi(),a=popi(); push(a==b?1:0); });
-		prim("<",  [&]{ int b=popi(),a=popi(); push(a< b?1:0); });
-		prim(">",  [&]{ int b=popi(),a=popi(); push(a> b?1:0); });
-		prim("0=", [&]{ push(popi()==0?1:0); });
+		prim("=",  [&]{ int b=pop(),a=pop(); push(a==b?1:0); });
+		prim("<",  [&]{ int b=pop(),a=pop(); push(a< b?1:0); });
+		prim(">",  [&]{ int b=pop(),a=pop(); push(a> b?1:0); });
+		prim("0=", [&]{ push(pop()==0?1:0); });
 
 	// Strings
 
 	// Output a string from the stack
-		prim("type", [&]	{
-    	Value v = pop();
-    	if (std::holds_alternative<std::string>(v)) {
-				std::cout << std::get<std::string>(v);
-    	} else {
-				throw std::runtime_error("type expects a string variant");
-    	}
-		});
+	//	prim("type", [&]	{
+  //  	int v = pop();
+  //  	if (std::holds_alternative<std::string>(v)) {
+	//			std::cout << std::get<std::string>(v);
+  //  	} else {
+	//			throw std::runtime_error("type expects a string variant");
+  //  	}
+	//	});
 
 		// String equality
-		prim("s=", [&]{
-    	std::string b = std::get<std::string>(pop());
-    	std::string a = std::get<std::string>(pop());
-    	push(a == b ? 1 : 0);
-		});
+		//prim("s=", [&]{
+		//std::string b = std::get<std::string>(pop());
+		//std::string a = std::get<std::string>(pop());
+		//push(a == b ? 1 : 0);
+		//});
 
 		prim("key", [&] {
 			struct termios old_t, new_t;
@@ -308,11 +297,11 @@ private:
 		});
 		
 		prim("accept", [&]{
-			int max_len = popi();
+			int max_len = pop();
 			std::string line;
 			std::getline(std::cin, line);
 			if (line.length() > max_len) line = line.substr(0, max_len);
-			push(line);
+			//push(line);
 		});
 		
 		// Bases
@@ -324,24 +313,24 @@ private:
 
 		// Memory
 		prim("@", [&]{
-			int addr = popi();
+			int addr = pop();
 			if (addr<0||addr>=(int)heap.size()) throw std::runtime_error("Invalid heap address "+std::to_string(addr));
 			push(heap[addr]);
 		});
 		prim("!", [&]{
-			int addr = popi();
-			int val  = popi();
+			int addr = pop();
+			int val  = pop();
 			if (addr<0||addr>=(int)heap.size()) throw std::runtime_error("Invalid heap address "+std::to_string(addr));
 			heap[addr] = val;
 		});
-		prim("cell+", [&]{ push(popi()+1); });
+		prim("cell+", [&]{ push(pop()+1); });
 		prim("cell",  [&]{ push(1); });
     prim("cells", [&]{ /* no-op */ });
-    prim(",",     [&]{ heap.push_back(popi()); });
+    prim(",",     [&]{ heap.push_back(pop()); });
 		prim("here",  [&]{ push(heap.size()); });
     prim("create",[&]{ /* no-op */ });
 		prim("fill",  [&]{
-			int c=popi();int l=popi();int a=popi();
+			int c=pop();int l=pop();int a=pop();
 			for(int i=a; i<a+l;i++){
 				if (i<0||i>=(int)heap.size())
 					throw std::runtime_error("Invalid heap address "+
@@ -350,7 +339,7 @@ private:
 			}
 		});
 		prim("dump",  [&]{
-			int l=popi();int a=popi();
+			int l=pop();int a=pop();
 			std::cout << a << " :";
 			for(int i=a; i<a+l;i++){
 				if (i<0||i>=(int)heap.size())
@@ -365,14 +354,14 @@ private:
 		dict["c@"] = dict["@"];
 		dict["c,"] = dict[","];
     // Output
-		prim(".",    [&]{ std::cout << format_int(popi(), heap[base_addr]) << " "; });
-		prim("emit", [&]{ std::cout << (char)popi(); });
+		prim(".",    [&]{ std::cout << format_int(pop(), heap[base_addr]) << " "; });
+		prim("emit", [&]{ std::cout << (char)pop(); });
 		prim("cr",   [&]{ std::cout << "\n"; });
 		prim(".s",   [&]{
 			std::cout << "Stack: [";
 			for (size_t i=0;i<stack.size();i++) {
 				if (i) std::cout << ", ";
-				std::cout << as_int(stack[i]);
+				std::cout << stack[i];
 			}
 			std::cout << "]\n";
 		});
@@ -383,12 +372,12 @@ private:
 			}
 		});
     prim("compile,", [&]{
-			int index = popi();
+			int index = pop();
 			std::string name = xt_table[index];
 			emit(make("call", name)); 
 		});
 		prim("execute", [&]{
-    int index = popi(); 
+    int index = pop(); 
     if (index >= 0 && index < xt_table.size()) {
         run_word(xt_table[index]);
     }
@@ -397,13 +386,13 @@ private:
 		// Loop index
 		prim("i", [&] {
 			// top of rstack is current index (pushed after limit)
-			push(as_int(rstack.back()));
+			push(rstack.back());
 		});
     prim("j", [&]{
 			// j is the index of the *outer* loop, sitting 2 slots below the top
 			if (rstack.size() < 3)
         throw std::runtime_error("j used outside nested loop");
-			push(as_int(rstack[rstack.size() - 3]));
+			push(rstack[rstack.size() - 3]);
 		});
 		prim("unloop", [&]{
 			if (rstack.size() < 2) throw std::runtime_error("unloop outside loop");
@@ -413,7 +402,7 @@ private:
 		
 		// Allot
 		prim("allot", [&]{
-			int n = popi();
+			int n = pop();
 			heap.resize(heap.size()+n, 0);
 		});
 
@@ -506,7 +495,7 @@ void see_code(const std::vector<Ins>& code) {
 				auto [s, ni] = collect_string(tokens, i, '"');
 				i = ni;
 				if (!compiling) {
-					push(s); // Push actual std::string to variant stack
+					//push(s); // Push actual std::string to variant stack
 				} else {
 					emit(make("push-str", s)); // We need a new opcode for this
 				}
