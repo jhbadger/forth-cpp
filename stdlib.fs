@@ -68,3 +68,10 @@
 
 \ show top of stack in various bases but leave the number unchanged
 : .nums ( n -- n ) .bin .oct .dec .hex ;
+
+\ misc words
+
+\ outputs code for space
+: bl ( -- c ) 32 ;
+
+\ : fill 
