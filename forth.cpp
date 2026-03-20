@@ -1,4 +1,5 @@
 #include <iostream>
+#include <termios.h>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -292,6 +293,26 @@ private:
     	std::string b = std::get<std::string>(pop());
     	std::string a = std::get<std::string>(pop());
     	push(a == b ? 1 : 0);
+		});
+
+		prim("key", [&] {
+			struct termios old_t, new_t;
+			tcgetattr(STDIN_FILENO, &old_t);
+			new_t = old_t;
+			new_t.c_lflag &= ~(ICANON | ECHO);
+			tcsetattr(STDIN_FILENO, TCSANOW, &new_t);
+			char c;
+			std::cin.get(c);			
+			tcsetattr(STDIN_FILENO, TCSANOW, &old_t);
+			push((int)c);
+		});
+		
+		prim("accept", [&]{
+			int max_len = popi();
+			std::string line;
+			std::getline(std::cin, line);
+			if (line.length() > max_len) line = line.substr(0, max_len);
+			push(line);
 		});
 		
 		// Bases
