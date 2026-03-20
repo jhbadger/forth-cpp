@@ -180,6 +180,8 @@ private:
 				if (popi() == 0) pc = ins.ival - 1;
 			} else if (ins.op == "exit") {
 				return;
+			}	else if (ins.op == "push-str") {
+				push(ins.sval);
 			} else if (ins.op == "local@") {
 				push(lframes.back()[ins.ival]);
 			} else if (ins.op == "local!") {
@@ -273,6 +275,25 @@ private:
 		prim(">",  [&]{ int b=popi(),a=popi(); push(a> b?1:0); });
 		prim("0=", [&]{ push(popi()==0?1:0); });
 
+	// Strings
+
+	// Output a string from the stack
+		prim("type", [&]	{
+    	Value v = pop();
+    	if (std::holds_alternative<std::string>(v)) {
+				std::cout << std::get<std::string>(v);
+    	} else {
+				throw std::runtime_error("type expects a string variant");
+    	}
+		});
+
+		// String equality
+		prim("s=", [&]{
+    	std::string b = std::get<std::string>(pop());
+    	std::string a = std::get<std::string>(pop());
+    	push(a == b ? 1 : 0);
+		});
+		
 		// Bases
 		prim("base",    [&]{ push(base_addr); });
 		prim("hex",     [&]{ heap[base_addr]=16; });
@@ -460,6 +481,17 @@ void see_code(const std::vector<Ins>& code) {
 				continue;
 			}
 
+			if (t == "s\"") {
+				auto [s, ni] = collect_string(tokens, i, '"');
+				i = ni;
+				if (!compiling) {
+					push(s); // Push actual std::string to variant stack
+				} else {
+					emit(make("push-str", s)); // We need a new opcode for this
+				}
+				continue;
+			}
+			
 			// String literal
 			if (t == ".\"" || t == ".(") {
 				char delim = t[1];
