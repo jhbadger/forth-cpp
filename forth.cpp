@@ -60,6 +60,7 @@ private:
 	std::vector<Value>               stack;
 	std::vector<Value>               rstack;    // holds int or vector<Value> (locals frame)
 	std::vector<std::string>         locals;
+	std::vector<std::vector<int>>    leave_stack;
 	std::unordered_map<std::string, Entry> dict;
 	std::vector<std::string> xt_table;
 	bool compiling = false;
@@ -361,8 +362,13 @@ private:
 			if (rstack.size() < 3)
         throw std::runtime_error("j used outside nested loop");
 			push(as_int(rstack[rstack.size() - 3]));
-		});            
-
+		});
+		prim("unloop", [&]{
+			if (rstack.size() < 2) throw std::runtime_error("unloop outside loop");
+			rstack.pop_back(); // drop index
+			rstack.pop_back(); // drop limit
+		});
+		
 		// Allot
 		prim("allot", [&]{
 			int n = popi();
@@ -579,7 +585,13 @@ void see_code(const std::vector<Ins>& code) {
 				does_pos  = -1;
 				continue;
 			}
-
+			if (t == "exit") {
+				if (!locals.empty()) {
+					emit(make("locals-exit"));
+				}
+				emit(make("exit"));
+				continue;
+			}
 			if (t == "does>") { does_pos = (int)prog.size(); continue; }
 			
 			if (t == "recurse") { emit(make("call", current)); continue; }
@@ -597,15 +609,67 @@ void see_code(const std::vector<Ins>& code) {
 				prog[prev].ival = (int)prog.size();
 				continue;
 			}
-			if (t == "do")   { emit(make("(do)")); cstack.push_back((int)prog.size()); continue; }
-			if (t == "loop") {
-				int addr = cstack.back(); cstack.pop_back();
-				emit(make("(loop)", addr));
+			if (t == "do")   {
+				emit(make("(do)"));
+				cstack.push_back((int)prog.size());
+				leave_stack.push_back({});
 				continue;
 			}
-			if (t == "+loop") {
+			if (t == "leave") {
+				emit(make("branch", 0)); // Dummy branch to be patched later
+				if (leave_stack.empty())
+					throw std::runtime_error("LEAVE outside DO-LOOP");
+				leave_stack.back().push_back((int)prog.size() - 1); 
+				continue;
+			}
+			if (t == "loop" || t == "+loop") {
 				int addr = cstack.back(); cstack.pop_back();
-				emit(make("(+loop)", addr));
+				std::string op = (t == "loop") ? "(loop)" : "(+loop)";
+				emit(make(op, addr));
+
+				// Patch all LEAVEs for this loop level
+				int exit_addr = (int)prog.size(); 
+				for (int patch_me : leave_stack.back()) {
+					prog[patch_me].ival = exit_addr;
+				}
+				leave_stack.pop_back(); // Remove this loop's layer
+				continue;
+			}
+			if (t == "begin") {
+				// Mark the start of the loop
+				cstack.push_back((int)prog.size()); 
+				continue;
+			}
+
+			if (t == "until") {
+				// Pops a flag; if 0, jumps back to BEGIN
+				int target = cstack.back(); cstack.pop_back();
+				emit(make("0branch", target)); 
+				continue;
+			}
+			
+			if (t == "again") {
+				// Unconditional jump back to BEGIN
+				int target = cstack.back(); cstack.pop_back();
+				emit(make("branch", target));
+				continue;
+			}
+			
+			if (t == "while") {
+				// Used in BEGIN ... WHILE ... REPEAT
+				// If flag is 0, jump out of the loop (to be patched by REPEAT)
+				emit(make("0branch", 0));
+				cstack.push_back((int)prog.size() - 1); // Save address of the 0branch to patch
+				continue;
+			}
+			
+			if (t == "repeat") {
+				// Jump back to BEGIN, then patch the WHILE exit
+				int while_addr = cstack.back(); cstack.pop_back();
+				int begin_addr = cstack.back(); cstack.pop_back();
+				
+				emit(make("branch", begin_addr));      // Loop back to start
+				prog[while_addr].ival = (int)prog.size(); // Patch WHILE to jump here on failure
 				continue;
 			}
 			if (t == "{") {
