@@ -1,3 +1,4 @@
+
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -508,7 +509,11 @@ private:
     prim(".", [&] { std::cout << format_int(pop(), heap[base_addr]) << " "; });
     prim("emit", [&] { std::cout << (char)pop(); });
     prim("cr", [&] { std::cout << "\n"; });
-    prim(".s", [&] {
+		prim("at-xy", [&] { 
+			int y = pop(); int x = pop();
+			std::cout << "\033[" << (y + 1) << ";" << (x + 1) << "H" << std::flush;
+		});
+		prim(".s", [&] {
       std::cout << "Stack: [";
       for (size_t i = 0; i < stack.size(); i++) {
         if (i)
