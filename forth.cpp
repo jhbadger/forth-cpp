@@ -69,7 +69,7 @@ class Forth {
 public:
   Forth() : heap(1, 10) {} // heap[0] = BASE = 10
 
-  void repl();
+  void repl(int argc, char *argv[]);
 
 private:
   std::vector<int> stack;
@@ -205,7 +205,7 @@ private:
     std::string line, accumulated;
     while (std::getline(f, line)) {
 			line = trim(line);
-			if (line.empty()) continue;
+			if (line.empty() || (line[0]=='#' && line[1]=='!')) continue;
 			accumulated += (accumulated.empty() ? "" : " ") + line;
 			// Only process when all open s" are closed
 			int opens = 0;
@@ -612,7 +612,7 @@ private:
         throw std::runtime_error("help-set: invalid string index");
 			help_db[lower(string_table[name_idx])] = string_table[body_idx] + "\n";
 		});
-		
+		prim("bye", [&] {exit(0);});
     // Allot
     prim("allot", [&] {
       int n = pop();
@@ -1139,13 +1139,14 @@ private:
 
 // -- REPL
 // ----------------------------------------------------------------------
-void Forth::repl() {
+void Forth::repl(int argc, char *argv[]) {
   init_prims();
-  std::cout << "BadgerForth 1.0\n";
   std::string dir = DIR; // Access the preprocessor macro as a string
   load_file(trim(dir) + "/stdlib.fs");
   load_help(trim(dir) + "/help.txt");
-  
+  if (argc > 1)
+    load_file(argv[1]);
+	std::cout << "BadgerForth 1.0\n";  
   while (true) {
 #ifdef USE_READLINE
     // readline() provides the prompt and returns a malloc'd char*
@@ -1167,8 +1168,6 @@ void Forth::repl() {
 #endif
 
     line = trim(line);
-    if (line == "bye")
-      break;
     if (line.empty())
       continue;
 
@@ -1190,6 +1189,6 @@ void Forth::repl() {
 }
 
 int main(int argc, char *argv[]) {
-  Forth().repl();
+  Forth().repl(argc, argv);
   return 0;
 }
