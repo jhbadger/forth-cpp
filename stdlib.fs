@@ -39,6 +39,7 @@ s" ( addr len -- ) prints content of array starting from addr" help-set
 : 2swap  rot >r rot r> ;
 : nip    swap drop ;
 : tuck   swap over ;
+: ?dup   dup if dup then ;
 
 \ -- Logic -----------------------------------------------------------
 : and   * 0= 0= ;
@@ -278,4 +279,13 @@ help-set
 s" bl"
 s" ( -- 32 )
 Pushes the ASCII code for space (32)."
+help-set
+
+s" ?dup"
+s" ( n -- n n | 0 )
+  Duplicates the top of stack only if it is non-zero.
+  If n is 0, leaves 0 unchanged and does not duplicate.
+  Useful for conditional loops where zero means done.
+  Example: 0 ?dup . => 0
+  Example: 3 ?dup . . => 3 3"
 help-set
