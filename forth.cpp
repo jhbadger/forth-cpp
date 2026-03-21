@@ -54,7 +54,8 @@ static Ins make(std::string op, int v, std::string s) {
 
 // -- Dict entry ---------------------------------------------------------------
 struct Entry {
-  enum Kind { PRIM, WORD, DEFINING, CREATE } kind;
+	enum Kind { PRIM, WORD, DEFINING, CREATE } kind;
+	enum Category { CAT_NONE, CAT_RUNTIME, CAT_SYNTAX, CAT_STDLIB } category;
   std::function<void()> prim;
   std::vector<Ins> code;      // init code (WORD/DEFINING)
   std::vector<Ins> does_code; // DEFINING does> / CREATE body
@@ -401,7 +402,7 @@ private:
       push((int)string_table.size() - 1);
     });
 
-		// clear string_table
+    // clear string_table
     prim("s.clear", [&] {
       string_table.clear();
       std::cout << "String table cleared.\n";
@@ -415,7 +416,7 @@ private:
         std::cout << "[" << i << "] \"" << string_table[i] << "\"\n";
       }
     });
-    
+
     // Accept input and store as a new string: ( maxlen -- idx )
     prim("accept", [&] {
       int max_len = pop();
@@ -509,11 +510,12 @@ private:
     prim(".", [&] { std::cout << format_int(pop(), heap[base_addr]) << " "; });
     prim("emit", [&] { std::cout << (char)pop(); });
     prim("cr", [&] { std::cout << "\n"; });
-		prim("at-xy", [&] { 
-			int y = pop(); int x = pop();
-			std::cout << "\033[" << (y + 1) << ";" << (x + 1) << "H" << std::flush;
-		});
-		prim(".s", [&] {
+    prim("at-xy", [&] {
+      int y = pop();
+      int x = pop();
+      std::cout << "\033[" << (y + 1) << ";" << (x + 1) << "H" << std::flush;
+    });
+    prim(".s", [&] {
       std::cout << "Stack: [";
       for (size_t i = 0; i < stack.size(); i++) {
         if (i)
@@ -564,21 +566,87 @@ private:
       heap.resize(heap.size() + n, 0);
     });
 
-    // Words
-    prim("words", [&] {
-      std::vector<std::string> names;
-      for (auto &kv : dict)
-        names.push_back(kv.first);
-      std::sort(names.begin(), names.end());
-      for (auto &n : names)
-        std::cout << n << " ";
-      std::cout << "\n";
-    });
-    // Misc
-    prim("include", [&] { /* no-op just to add to words */ });
-    prim("edit", [&] { /* no-op just to add to words */ });
-    prim("see", [&] { /* no-op just to add to words */ });
-    prim("bye", [&] { /* no-op just to add to words */ });
+    // Syntax
+    auto syntax_parser = [&](std::string name) {
+      Entry e;
+      e.kind = Entry::PRIM;
+      e.prim = [name] {
+        throw std::runtime_error(name + " is a parser-level word");
+      };
+      e.category = Entry::CAT_SYNTAX;
+      dict[name] = e;
+    };
+
+    auto syntax_compile = [&](std::string name) {
+      // For words only meaningful inside a definition
+      Entry e;
+      e.kind = Entry::PRIM;
+      e.prim = [name] {
+        throw std::runtime_error(name + " is only valid inside a definition");
+      };
+      e.category = Entry::CAT_SYNTAX;
+      dict[name] = e;
+    };
+		// Parser-level: handled in process() before run_word is ever called
+		syntax_parser("create");
+		syntax_parser("include");
+		syntax_parser("edit");
+		syntax_parser("see");
+		syntax_parser("'");
+		syntax_parser("s\"");
+		syntax_parser(".\"");
+		syntax_parser(".(");
+		syntax_parser("\\");
+		syntax_parser(":");
+		syntax_parser("char");
+		syntax_parser("[char]");
+
+		// Compile-only: only valid inside : ... ;
+		syntax_compile(";");
+		syntax_compile("if");
+		syntax_compile("else");
+		syntax_compile("then");
+		syntax_compile("do");
+		syntax_compile("loop");
+		syntax_compile("+loop");
+		syntax_compile("leave");
+		syntax_compile("begin");
+		syntax_compile("until");
+		syntax_compile("while");
+		syntax_compile("repeat");
+		syntax_compile("again");
+		syntax_compile("does>");
+		syntax_compile("recurse");
+		syntax_compile("exit");
+		syntax_compile("{");
+		syntax_compile("->");
+		// Words
+		prim("words", [&] {
+			std::vector<std::string> runtime, syntax, user;
+			for (auto &kv : dict) {
+        if (kv.second.category == Entry::CAT_SYNTAX) {
+					syntax.push_back(kv.first);
+        } else if (kv.second.kind == Entry::WORD || 
+                   kv.second.kind == Entry::DEFINING ||
+                   kv.second.kind == Entry::CREATE) {
+					user.push_back(kv.first);
+        } else {
+					runtime.push_back(kv.first);
+        }
+			}
+			
+			std::sort(runtime.begin(), runtime.end());
+			std::sort(syntax.begin(), syntax.end());
+			std::sort(user.begin(), user.end());
+
+			std::cout << "Syntax:  ";
+			for (auto &n : syntax)  std::cout << n << " ";
+			std::cout << "\n\nRuntime: ";
+			for (auto &n : runtime) std::cout << n << " ";
+			std::cout << "\n\nUser:    ";
+			for (auto &n : user)    std::cout << n << " ";
+			std::cout << "\n";
+		});
   }
 
   // -- string literal collector -------------------------------------------
@@ -685,7 +753,15 @@ private:
           emit(make("strlit", s));
         continue;
       }
-
+      if (t == "char" || t == "[char]") {
+        std::string tok = tokens[++i];
+        int val = (int)(unsigned char)tok[0];
+        if (compiling)
+          emit(make("lit", val));
+        else
+          push(val);
+        continue;
+      }
       if (!compiling) {
         if (t == "include") {
           std::string filename = tokens[++i];
@@ -900,7 +976,11 @@ private:
                          1); // Save address of the 0branch to patch
         continue;
       }
-
+			if (t == "create") {
+				// Inside a defining word, create is handled at invocation time
+				// by the DEFINING entry mechanism — nothing to emit
+				continue;
+			}
       if (t == "repeat") {
         // Jump back to BEGIN, then patch the WHILE exit
         int while_addr = cstack.back();
