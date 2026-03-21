@@ -1,0 +1,388 @@
++
+  ( a b -- n )
+  Adds a and b.
+
+-
+  ( a b -- n )
+  Subtracts b from a.
+
+*
+  ( a b -- n )
+  Multiplies a and b.
+
+/
+  ( a b -- n )
+  Divides a by b. Integer division, truncates toward zero.
+
+mod
+  ( a b -- n )
+  Remainder of a divided by b.
+
+=
+  ( a b -- flag )
+  Returns 1 if a equals b, 0 otherwise.
+
+
+  ( a b -- flag )
+  Returns 1 if a is less than b, 0 otherwise.
+
+>
+  ( a b -- flag )
+  Returns 1 if a is greater than b, 0 otherwise.
+
+0=
+  ( n -- flag )
+  Returns 1 if n is zero, 0 otherwise.
+
+>r
+  ( n -- )
+  Moves top of data stack to return stack.
+
+r>
+  ( -- n )
+  Moves top of return stack to data stack.
+
+dup
+  ( n -- n n )
+  Duplicates the top of stack.
+
+drop
+  ( n -- )
+  Discards the top of stack.
+
+swap
+  ( a b -- b a )
+  Swaps the top two stack items.
+
+over
+  ( a b -- a b a )
+  Copies the second item to the top.
+
+rot
+  ( a b c -- b c a )
+  Rotates the third item to the top.
+
+.
+  ( n -- )
+  Prints top of stack in the current base, followed by a space.
+
+emit
+  ( c -- )
+  Prints a character by its ASCII value.
+
+cr
+  ( -- )
+  Prints a newline.
+
+.s
+  ( -- )
+  Prints the entire stack contents without consuming them.
+
+type
+  ( idx -- )
+  Prints the string at the given string table index.
+
+s=
+  ( idx1 idx2 -- flag )
+  Returns 1 if the two strings are equal, 0 otherwise.
+
+s+
+  ( idx1 idx2 -- idx3 )
+  Concatenates two strings, returns index of the new string.
+
+s.s
+  ( -- )
+  Prints the entire string table with indices. Useful for debugging.
+
+s.clear
+  ( -- )
+  Clears the string table entirely.
+
+accept
+  ( maxlen -- idx )
+  Reads a line of input, truncated to maxlen characters.
+  Returns the string table index of the input.
+
+key
+  ( -- c )
+  Reads a single keypress without echo. Returns ASCII value.
+
+base
+  ( -- addr )
+  Pushes the heap address of the BASE variable.
+
+hex
+  ( -- )
+  Sets the numeric base to 16.
+
+decimal
+  ( -- )
+  Sets the numeric base to 10.
+
+octal
+  ( -- )
+  Sets the numeric base to 8.
+
+binary
+  ( -- )
+  Sets the numeric base to 2.
+
+@
+  ( addr -- n )
+  Fetches the value at heap address addr.
+
+!
+  ( n addr -- )
+  Stores n at heap address addr.
+
+c@
+  ( addr -- n )
+  Fetches a value from heap address addr. Identical to @ in this Forth.
+
+c!
+  ( n addr -- )
+  Stores n at heap address addr. Identical to ! in this Forth.
+
+cell
+  ( -- n )
+  Pushes the size of one cell (1 in this Forth).
+
+cell+
+  ( addr -- addr+1 )
+  Adds one cell size to an address.
+
+cells
+  ( n -- n )
+  No-op in this Forth since cell size is 1. Included for compatibility.
+
+,
+  ( n -- )
+  Appends n to the heap at the current HERE position.
+
+c,
+  ( n -- )
+  Appends n to the heap at HERE. Identical to , in this Forth.
+
+here
+  ( -- addr )
+  Pushes the address of the next free heap cell.
+
+allot
+  ( n -- )
+  Reserves n cells on the heap, advancing HERE.
+
+fill
+  ( addr len val -- )
+  Fills len heap cells starting at addr with val.
+
+dump
+  ( addr len -- )
+  Prints len heap cells starting at addr.
+
+i
+  ( -- n )
+  Pushes the current loop index. Only valid inside a DO loop.
+
+j
+  ( -- n )
+  Pushes the outer loop index. Only valid inside a nested DO loop.
+
+unloop
+  ( -- )
+  Discards the current loop's index and limit from the return stack.
+  Required before EXIT inside a DO loop.
+
+compile,
+  ( xt -- )
+  Compiles a call to the word identified by execution token xt.
+
+execute
+  ( xt -- )
+  Executes the word identified by execution token xt.
+
+immediate
+  ( -- )
+  Marks the most recently defined word as immediate.
+  Immediate words execute at compile time rather than being compiled.
+
+words
+  ( -- )
+  Prints all known words grouped by category.
+
+'
+  ( -- xt )
+  Syntax: ' wordname
+  Pushes the execution token of the named word.
+
+see
+  ( -- )
+  Syntax: see wordname
+  Decompiles and prints the bytecode of the named word.
+
+include
+  ( -- )
+  Syntax: include filename
+  Loads and evaluates a Forth source file.
+
+edit
+  ( -- )
+  Syntax: edit filename
+  Opens a file in the system editor (uses $EDITOR, falls back to vi).
+
+bye
+  ( -- )
+  Exits the Forth interpreter.
+
+:
+  ( -- )
+  Syntax: : name ... ;
+  Begins a word definition. Everything until ; is compiled.
+
+;
+  ( -- )
+  Ends a word definition and stores it in the dictionary.
+
+create
+  ( -- )
+  Syntax: create name
+  Creates a new named dictionary entry whose body is the current HERE.
+  When invoked, pushes its body address. Typically used with DOES>.
+
+does>
+  ( -- )
+  Splits a defining word into build and run phases.
+  Code before DOES> runs when the defining word is invoked.
+  Code after DOES> runs whenever the created word is invoked.
+
+if
+  ( flag -- )
+  Begins a conditional. If flag is 0, skips to ELSE or THEN.
+  Only valid inside a definition.
+
+else
+  ( -- )
+  Separates the true and false branches of an IF...THEN block.
+  Only valid inside a definition.
+
+then
+  ( -- )
+  Closes an IF or IF...ELSE block.
+  Only valid inside a definition.
+
+endif
+  ( -- )
+  Alias for THEN.
+
+do
+  ( limit start -- )
+  Begins a counted loop from start to limit-1.
+  Use I for the current index. Only valid inside a definition.
+
+loop
+  ( -- )
+  Increments the loop index by 1 and jumps back to DO if index < limit.
+  Only valid inside a definition.
+
++loop
+  ( n -- )
+  Increments the loop index by n and jumps back to DO if not past limit.
+  Only valid inside a definition.
+
+leave
+  ( -- )
+  Immediately exits the enclosing DO loop.
+  Only valid inside a definition.
+
+begin
+  ( -- )
+  Marks the start of a BEGIN loop.
+  Only valid inside a definition.
+
+until
+  ( flag -- )
+  Jumps back to BEGIN if flag is 0. Exits loop if flag is non-zero.
+  Only valid inside a definition.
+
+while
+  ( flag -- )
+  If flag is 0 exits a BEGIN...WHILE...REPEAT loop.
+  Only valid inside a definition.
+
+repeat
+  ( -- )
+  Unconditionally jumps back to BEGIN in a BEGIN...WHILE...REPEAT loop.
+  Only valid inside a definition.
+
+again
+  ( -- )
+  Unconditionally jumps back to BEGIN. Creates an infinite loop.
+  Only valid inside a definition.
+
+recurse
+  ( -- )
+  Compiles a call to the word currently being defined.
+  Only valid inside a definition.
+
+exit
+  ( -- )
+  Returns immediately from the current word.
+  If inside a DO loop, use UNLOOP first.
+  Only valid inside a definition.
+
+{
+  ( ... -- )
+  Syntax: { a b c -- }
+  Declares local variables for the current definition.
+  Values are popped from the stack in reverse order.
+  Only valid inside a definition.
+
+->
+  ( n -- )
+  Syntax: -> localname
+  Stores the top of stack into the named local variable.
+  Only valid inside a definition containing locals.
+
+char
+  ( -- c )
+  Syntax: char A
+  Pushes the ASCII value of the first character of the next token.
+
+[char]
+  ( -- c )
+  Syntax: [char] A
+  Compiles the ASCII value of the first character of the next token.
+  Only valid inside a definition.
+
+s"
+  ( -- idx )
+  Syntax: s" some text"
+  Pushes a string onto the string table and leaves its index.
+  In compile mode the push happens at runtime.
+
+."
+  ( -- )
+  Syntax: ." some text"
+  Prints a string literal immediately (interpret) or at runtime (compile).
+
+.(
+  ( -- )
+  Syntax: .( some text)
+  Prints a string literal delimited by parentheses.
+
+\
+  ( -- )
+  Line comment. Ignores everything to the end of the line.
+
+(
+  ( -- )
+  Block comment. Ignores everything until the closing ).
+
+help
+  ( -- )
+  Syntax: help <word>
+  Displays help for a word. Bare HELP lists all documented words.
+
+help-set
+  ( name-idx body-idx -- )
+  Stores a help entry for a word. Both arguments are string table indices.
+  Usage: s" myword" s" ( n -- n ) Does a thing." help-set

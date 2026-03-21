@@ -54,8 +54,8 @@ static Ins make(std::string op, int v, std::string s) {
 
 // -- Dict entry ---------------------------------------------------------------
 struct Entry {
-	enum Kind { PRIM, WORD, DEFINING, CREATE } kind;
-	enum Category { CAT_NONE, CAT_RUNTIME, CAT_SYNTAX, CAT_STDLIB } category;
+  enum Kind { PRIM, WORD, DEFINING, CREATE } kind;
+  enum Category { CAT_NONE, CAT_RUNTIME, CAT_SYNTAX, CAT_STDLIB } category;
   std::function<void()> prim;
   std::vector<Ins> code;      // init code (WORD/DEFINING)
   std::vector<Ins> does_code; // DEFINING does> / CREATE body
@@ -88,6 +88,7 @@ private:
 
   int base_addr = 0;
   std::vector<int> heap;
+  std::unordered_map<std::string, std::string> help_db;
 
   // Locals frames live on a separate typed stack to keep rstack simple
   std::vector<std::vector<int>> lframes;
@@ -162,6 +163,41 @@ private:
     }
   }
 
+  void load_help(const std::string &filename) {
+    std::ifstream f(filename);
+    if (!f) {
+      std::cout << "Warning: could not open " << filename << "\n";
+      return;
+    }
+
+    std::string line;
+    std::string current_word;
+    std::string current_body;
+
+    auto flush = [&] {
+      if (!current_word.empty())
+        help_db[current_word] = current_body;
+    };
+
+    while (std::getline(f, line)) {
+      // Blank line = end of entry
+      if (trim(line).empty()) {
+        flush();
+        current_word.clear();
+        current_body.clear();
+        continue;
+      }
+      // Line with no leading whitespace = word name
+      if (line[0] != ' ' && line[0] != '\t') {
+        flush();
+        current_word = lower(trim(line));
+        current_body.clear();
+      } else {
+        current_body += trim(line) + "\n";
+      }
+    }
+    flush(); // catch last entry
+  }
   void load_file(std::string filename) {
     std::ifstream f(filename);
     if (!f) {
@@ -559,7 +595,15 @@ private:
       rstack.pop_back(); // drop index
       rstack.pop_back(); // drop limit
     });
-
+		prim("help-set", [&] {
+			int body_idx = pop();
+			int name_idx = pop();
+			if (name_idx < 0 || name_idx >= (int)string_table.size() ||
+					body_idx < 0 || body_idx >= (int)string_table.size())
+        throw std::runtime_error("help-set: invalid string index");
+			help_db[lower(string_table[name_idx])] = string_table[body_idx] + "\n";
+		});
+		
     // Allot
     prim("allot", [&] {
       int n = pop();
@@ -587,66 +631,70 @@ private:
       e.category = Entry::CAT_SYNTAX;
       dict[name] = e;
     };
-		// Parser-level: handled in process() before run_word is ever called
-		syntax_parser("create");
-		syntax_parser("include");
-		syntax_parser("edit");
-		syntax_parser("see");
-		syntax_parser("'");
-		syntax_parser("s\"");
-		syntax_parser(".\"");
-		syntax_parser(".(");
-		syntax_parser("\\");
-		syntax_parser(":");
-		syntax_parser("char");
-		syntax_parser("[char]");
-
-		// Compile-only: only valid inside : ... ;
-		syntax_compile(";");
-		syntax_compile("if");
-		syntax_compile("else");
-		syntax_compile("then");
-		syntax_compile("do");
-		syntax_compile("loop");
-		syntax_compile("+loop");
-		syntax_compile("leave");
-		syntax_compile("begin");
-		syntax_compile("until");
-		syntax_compile("while");
-		syntax_compile("repeat");
-		syntax_compile("again");
-		syntax_compile("does>");
-		syntax_compile("recurse");
-		syntax_compile("exit");
-		syntax_compile("{");
-		syntax_compile("->");
-		// Words
-		prim("words", [&] {
-			std::vector<std::string> runtime, syntax, user;
-			for (auto &kv : dict) {
+    // Parser-level: handled in process() before run_word is ever called
+    syntax_parser("create");
+    syntax_parser("include");
+    syntax_parser("edit");
+    syntax_parser("see");
+    syntax_parser("'");
+    syntax_parser("s\"");
+    syntax_parser(".\"");
+    syntax_parser(".(");
+    syntax_parser("\\");
+    syntax_parser(":");
+    syntax_parser("char");
+    syntax_parser("[char]");
+		syntax_parser("help");
+    
+    // Compile-only: only valid inside : ... ;
+    syntax_compile(";");
+    syntax_compile("if");
+    syntax_compile("else");
+    syntax_compile("then");
+    syntax_compile("do");
+    syntax_compile("loop");
+    syntax_compile("+loop");
+    syntax_compile("leave");
+    syntax_compile("begin");
+    syntax_compile("until");
+    syntax_compile("while");
+    syntax_compile("repeat");
+    syntax_compile("again");
+    syntax_compile("does>");
+    syntax_compile("recurse");
+    syntax_compile("exit");
+    syntax_compile("{");
+    syntax_compile("->");
+    // Words
+    prim("words", [&] {
+      std::vector<std::string> runtime, syntax, user;
+      for (auto &kv : dict) {
         if (kv.second.category == Entry::CAT_SYNTAX) {
-					syntax.push_back(kv.first);
-        } else if (kv.second.kind == Entry::WORD || 
+          syntax.push_back(kv.first);
+        } else if (kv.second.kind == Entry::WORD ||
                    kv.second.kind == Entry::DEFINING ||
                    kv.second.kind == Entry::CREATE) {
-					user.push_back(kv.first);
+          user.push_back(kv.first);
         } else {
-					runtime.push_back(kv.first);
+          runtime.push_back(kv.first);
         }
-			}
-			
-			std::sort(runtime.begin(), runtime.end());
-			std::sort(syntax.begin(), syntax.end());
-			std::sort(user.begin(), user.end());
+      }
 
-			std::cout << "Syntax:  ";
-			for (auto &n : syntax)  std::cout << n << " ";
-			std::cout << "\n\nRuntime: ";
-			for (auto &n : runtime) std::cout << n << " ";
-			std::cout << "\n\nUser:    ";
-			for (auto &n : user)    std::cout << n << " ";
-			std::cout << "\n";
-		});
+      std::sort(runtime.begin(), runtime.end());
+      std::sort(syntax.begin(), syntax.end());
+      std::sort(user.begin(), user.end());
+
+      std::cout << "Syntax:  ";
+      for (auto &n : syntax)
+        std::cout << n << " ";
+      std::cout << "\n\nRuntime: ";
+      for (auto &n : runtime)
+        std::cout << n << " ";
+      std::cout << "\n\nUser:    ";
+      for (auto &n : user)
+        std::cout << n << " ";
+      std::cout << "\n";
+    });
   }
 
   // -- string literal collector -------------------------------------------
@@ -774,6 +822,32 @@ private:
           edit_file(filename);
           continue;
         }
+				if (t == "help") {
+					if (i + 1 >= (int)tokens.size()) {
+						// bare "help" lists all words that have help entries
+						std::vector<std::string> names;
+						for (auto &kv : help_db)
+							names.push_back(kv.first);
+						std::sort(names.begin(), names.end());
+						std::cout << "Words with help entries:\n  ";
+						for (auto &n : names)
+							std::cout << n << " ";
+						std::cout << "\n";
+					} else {
+						std::string name = lower(tokens[++i]);
+						auto it = help_db.find(name);
+						if (it != help_db.end()) {
+							std::cout << name << "\n" << it->second;
+						} else {
+							// Fallback: at least confirm whether the word exists
+							if (dict.count(name))
+                std::cout << name << ": no help entry (word exists)\n";
+							else
+                std::cout << name << ": unknown word\n";
+						}
+					}
+					continue;
+				}
         if (t == "create") {
           std::string new_name = lower(tokens[++i]); // Grab "sizes"
           Entry ne;
@@ -976,11 +1050,11 @@ private:
                          1); // Save address of the 0branch to patch
         continue;
       }
-			if (t == "create") {
-				// Inside a defining word, create is handled at invocation time
-				// by the DEFINING entry mechanism — nothing to emit
-				continue;
-			}
+      if (t == "create") {
+        // Inside a defining word, create is handled at invocation time
+        // by the DEFINING entry mechanism — nothing to emit
+        continue;
+      }
       if (t == "repeat") {
         // Jump back to BEGIN, then patch the WHILE exit
         int while_addr = cstack.back();
@@ -1058,11 +1132,11 @@ private:
 // ----------------------------------------------------------------------
 void Forth::repl() {
   init_prims();
-  std::cout << "Mini C++ Forth\n";
+  std::cout << "BadgerForth 1.0\n";
   std::string dir = DIR; // Access the preprocessor macro as a string
-  std::string filepath = trim(dir) + "/stdlib.fs";
-  load_file(filepath);
-
+  load_file(trim(dir) + "/stdlib.fs");
+  load_help(trim(dir) + "/help.txt");
+  
   while (true) {
 #ifdef USE_READLINE
     // readline() provides the prompt and returns a malloc'd char*

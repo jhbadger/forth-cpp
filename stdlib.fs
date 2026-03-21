@@ -13,6 +13,9 @@
   loop
   drop ;
 
+s" print-array" 
+s" ( addr len -- ) prints content of array starting from addr" help-set
+
 \ - Boolean constants ----------------------------------------------
 -1 constant true
 0  constant false
