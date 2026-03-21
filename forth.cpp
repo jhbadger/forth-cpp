@@ -198,20 +198,29 @@ private:
     }
     flush(); // catch last entry
   }
-  void load_file(std::string filename) {
+
+	void load_file(const std::string &filename) {
     std::ifstream f(filename);
-    if (!f) {
-      std::cout << "Cannot open " << filename << "\n";
-      return;
-    }
-    std::string line;
+    if (!f) { std::cout << "Cannot open " << filename << "\n"; return; }
+    std::string line, accumulated;
     while (std::getline(f, line)) {
-      line = trim(line);
-      if (line.empty())
-        continue;
-      process(split(line));
+			line = trim(line);
+			if (line.empty()) continue;
+			accumulated += (accumulated.empty() ? "" : " ") + line;
+			// Only process when all open s" are closed
+			int opens = 0;
+			for (int i = 0; i < (int)accumulated.size(); i++) {
+				if (accumulated[i] == '"') opens++;
+			}
+			if (opens % 2 == 0) {
+				process(split(accumulated));
+				accumulated.clear();
+			}
     }
-  }
+    if (!accumulated.empty())
+			process(split(accumulated));
+	}  
+	
 
   static std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), ::tolower);
