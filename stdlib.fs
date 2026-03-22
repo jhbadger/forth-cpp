@@ -78,7 +78,21 @@ s" ( addr len -- ) prints content of array starting from addr" help-set
 \ outputs code for space
 : bl ( -- c ) 32 ;
 
-\ : fill 
+\ -- Double-cell memory ---------------------------------------------
+
+: 2!  ( lo hi addr -- )
+  DUP >R ! R> 1+ ! ;
+
+: 2@  ( addr -- lo hi )
+  DUP @ SWAP 1+ @ ;
+
+\ -- Double-cell return stack ---------------------------------------
+
+: 2>r  ( lo hi -- )
+  SWAP >R >R ;
+
+: 2r>  ( -- lo hi )
+  R> R> SWAP ;
 
 \ -- Help entries for stdlib words ----------------------------------
 
@@ -288,4 +302,40 @@ s" ( n -- n n | 0 )
   Useful for conditional loops where zero means done.
   Example: 0 ?dup . => 0
   Example: 3 ?dup . . => 3 3"
+help-set
+
+s" 2!"
+s"  ( lo hi addr -- )
+  Stores a double-cell value at addr and addr+1.
+  lo is stored at addr, hi is stored at addr+1.
+  Example: variable x  2 cells allot
+           10 20 x 2!
+           x 2@ . .  => 10 20"
+help-set
+
+s" 2@"
+s"  ( addr -- lo hi )
+  Fetches a double-cell value from addr and addr+1.
+  Leaves lo then hi on the stack, hi on top.
+  Example: variable x  2 cells allot
+           10 20 x 2!
+           x 2@ . .  => 20 10"
+help-set
+
+s" 2>r"
+s"  ( lo hi -- )
+  Moves a double-cell value from the data stack to the return stack.
+  Order is preserved: 2r> will restore lo hi with hi on top.
+  Must be balanced with 2r> before the word exits.
+  Only valid inside a definition.
+  Example: : test  1 2 2>r  3 4  2r> . . . . ;
+           test => 2 1 4 3"
+help-set
+
+s" 2r>"
+s"  ( -- lo hi )
+  Moves a double-cell value from the return stack to the data stack.
+  Restores the pair pushed by 2>r with hi on top.
+  Only valid inside a definition.
+  See also: 2>r"
 help-set
