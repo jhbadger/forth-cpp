@@ -662,6 +662,7 @@ private:
     syntax_compile("does>");
     syntax_compile("recurse");
     syntax_compile("exit");
+		syntax_compile("[compile]");
     syntax_compile("{");
     syntax_compile("->");
     // Words
@@ -809,6 +810,14 @@ private:
           push(val);
         continue;
       }
+			if (t == "[compile]") {
+				std::string name = lower(tokens[++i]);
+				auto it = dict.find(name);
+				if (it == dict.end())
+					throw std::runtime_error("[compile]: unknown word: " + name);
+				emit(make("call", name));  // compile it regardless of immediate flag
+				continue;
+			}
       if (!heap[state_addr]) {
         if (t == "include") {
           std::string filename = tokens[++i];
