@@ -1,4 +1,3 @@
-
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -67,8 +66,7 @@ struct Entry {
 // ---------------------------------------------------------
 class Forth {
 public:
-  Forth() : heap(1, 10) {} // heap[0] = BASE = 10
-
+  Forth() : heap({10, 0}) {} // heap[0] = BASE = 10 , heap[1] = STATE
   void repl(int argc, char *argv[]);
 
 private:
@@ -79,7 +77,6 @@ private:
   std::unordered_map<std::string, Entry> dict;
   std::vector<std::string> xt_table;
   std::vector<std::string> string_table;
-  bool compiling = false;
   std::string last_word;
   std::string current;
   std::vector<Ins> prog;
@@ -87,6 +84,7 @@ private:
   int does_pos = -1;
 
   int base_addr = 0;
+	int state_addr = 1;
   std::vector<int> heap;
   std::unordered_map<std::string, std::string> help_db;
 
@@ -486,15 +484,6 @@ private:
       push((int)c);
     });
 
-    prim("accept", [&] {
-      int max_len = pop();
-      std::string line;
-      std::getline(std::cin, line);
-      if (line.length() > max_len)
-        line = line.substr(0, max_len);
-      // push(line);
-    });
-
     // Bases
     prim("base", [&] { push(base_addr); });
     prim("hex", [&] { heap[base_addr] = 16; });
@@ -570,6 +559,7 @@ private:
       std::cout << "]\n";
     });
     // Compiling
+		prim("state", [&] { push(state_addr); });
     prim("immediate", [&] {
       if (!last_word.empty()) {
         dict[last_word].is_immediate = true;
@@ -786,7 +776,7 @@ private:
       if (t == "s\"") {
         auto [s, ni] = collect_string(tokens, i, '"');
         i = ni;
-        if (!compiling) {
+        if (!heap[state_addr]) {
           // Immediate mode: store in table and push index
           string_table.push_back(s);
           push((int)string_table.size() - 1);
@@ -804,7 +794,7 @@ private:
           delim = ')'; // match parens
         auto [s, ni] = collect_string(tokens, i, delim);
         i = ni;
-        if (!compiling)
+        if (!heap[state_addr])
           std::cout << s;
         else
           emit(make("strlit", s));
@@ -813,13 +803,13 @@ private:
       if (t == "char" || t == "[char]") {
         std::string tok = tokens[++i];
         int val = (int)(unsigned char)tok[0];
-        if (compiling)
+        if (heap[state_addr])
           emit(make("lit", val));
         else
           push(val);
         continue;
       }
-      if (!compiling) {
+      if (!heap[state_addr]) {
         if (t == "include") {
           std::string filename = tokens[++i];
           load_file(filename);
@@ -918,7 +908,7 @@ private:
           last_word = current;
           prog = {};
           does_pos = -1;
-          compiling = true;
+          heap[state_addr] = 1;
           continue;
         }
 
@@ -962,7 +952,7 @@ private:
           e.code = prog;
         }
         dict[current] = e;
-        compiling = false;
+        heap[state_addr] = 0;
         does_pos = -1;
         continue;
       }
@@ -1182,7 +1172,7 @@ void Forth::repl(int argc, char *argv[]) {
       lframes.clear();
       cstack.clear();
       prog.clear();
-      compiling = false;
+      heap[state_addr] = 0;
       does_pos = -1;
     }
   }

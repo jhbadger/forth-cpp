@@ -394,6 +394,16 @@ at-xy
   Uses ANSI escape sequences; requires an ANSI-compatible terminal.
   Example: 10 5 at-xy  moves cursor to column 10, row 5
 
+state
+  ( -- addr )
+  Pushes the address of the STATE variable in the heap.
+  STATE holds 1 if the interpreter is in compile mode, 0 if in
+  interpret mode. Use @ to fetch the current value.
+	STATE is set to 1 when : begins a definition and back to 0
+  when ; ends it. It is also reset to 0 if an error occurs.
+	Directly storing to STATE with ! is possible but risky -- use
+  [ and ] instead to switch modes cleanly inside a definition.
+	
 info
   ( -- )
   BadgerForth -- a lightweight Forth interpreter written in C++.
