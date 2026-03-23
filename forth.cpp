@@ -54,7 +54,6 @@ static Ins make(std::string op, int v, std::string s) {
 // -- Dict entry ---------------------------------------------------------------
 struct Entry {
   enum Kind { PRIM, WORD, DEFINING, CREATE } kind;
-  enum Category { CAT_NONE, CAT_RUNTIME, CAT_SYNTAX, CAT_STDLIB } category;
   std::function<void()> prim;
   std::vector<Ins> code;      // init code (WORD/DEFINING)
   std::vector<Ins> does_code; // DEFINING does> / CREATE body
@@ -601,11 +600,48 @@ private:
       }
     });
 
-    // Loop index
+    // Loops
+		prim("do", [&] {
+			emit(make("(do)"));
+			cstack.push_back((int)prog.size());
+			leave_stack.push_back({});
+		});
+		dict["do"].is_immediate = true;
+		prim("loop", [&] {
+			int addr = cstack.back();
+			cstack.pop_back();
+			emit(make("(loop)", addr));
+			// Patch all LEAVEs for this loop level
+			int exit_addr = (int)prog.size();
+			for (int patch_me : leave_stack.back()) {
+				prog[patch_me].ival = exit_addr;
+			}
+			leave_stack.pop_back(); // Remove this loop's layer
+		});
+		dict["loop"].is_immediate = true;
+		prim("+loop", [&] {
+			int addr = cstack.back();
+			cstack.pop_back();
+			emit(make("(+loop)", addr));
+			// Patch all LEAVEs for this loop level
+			int exit_addr = (int)prog.size();
+			for (int patch_me : leave_stack.back()) {
+				prog[patch_me].ival = exit_addr;
+			}
+			leave_stack.pop_back(); // Remove this loop's layer
+		});
+	  dict["+loop"].is_immediate = true;
     prim("i", [&] {
       // top of rstack is current index (pushed after limit)
       push(rstack.back());
     });
+		prim("leave", [&] {
+			emit(make("branch", 0)); // Dummy branch to be patched later
+			if (leave_stack.empty())
+				throw std::runtime_error("LEAVE outside DO-LOOP");
+			leave_stack.back().push_back((int)prog.size() - 1);
+		});
+    dict["leave"].is_immediate = true;
     prim("j", [&] {
       // j is the index of the *outer* loop, sitting 2 slots below the top
       if (rstack.size() < 3)
@@ -633,86 +669,14 @@ private:
       heap.resize(heap.size() + n, 0);
     });
 
-    // Syntax
-    auto syntax_parser = [&](std::string name) {
-      Entry e;
-      e.kind = Entry::PRIM;
-      e.prim = [name] {
-        throw std::runtime_error(name + " is a parser-level word");
-      };
-      e.category = Entry::CAT_SYNTAX;
-      dict[name] = e;
-    };
-
-    auto syntax_compile = [&](std::string name) {
-      // For words only meaningful inside a definition
-      Entry e;
-      e.kind = Entry::PRIM;
-      e.prim = [name] {
-        throw std::runtime_error(name + " is only valid inside a definition");
-      };
-      e.category = Entry::CAT_SYNTAX;
-      dict[name] = e;
-    };
-    // Parser-level: handled in process() before run_word is ever called
-    syntax_parser("create");
-    syntax_parser("include");
-    syntax_parser("edit");
-    syntax_parser("see");
-    syntax_parser("'");
-    syntax_parser("s\"");
-    syntax_parser(".\"");
-    syntax_parser(".(");
-    syntax_parser("\\");
-    syntax_parser(":");
-    syntax_parser("char");
-    syntax_parser("[char]");
-    syntax_parser("help");
-
-    // Compile-only: only valid inside : ... ;
-    syntax_compile(";");
-    syntax_compile("do");
-    syntax_compile("loop");
-    syntax_compile("+loop");
-    syntax_compile("leave");
-    syntax_compile("begin");
-    syntax_compile("until");
-    syntax_compile("while");
-    syntax_compile("repeat");
-    syntax_compile("again");
-    syntax_compile("does>");
-    syntax_compile("recurse");
-    syntax_compile("exit");
-    syntax_compile("postpone");
-    syntax_compile("{");
-    syntax_compile("->");
     // Words
     prim("words", [&] {
-      std::vector<std::string> runtime, syntax, user;
+      std::vector<std::string> words;
       for (auto &kv : dict) {
-        if (kv.second.category == Entry::CAT_SYNTAX) {
-          syntax.push_back(kv.first);
-        } else if (kv.second.kind == Entry::WORD ||
-                   kv.second.kind == Entry::DEFINING ||
-                   kv.second.kind == Entry::CREATE) {
-          user.push_back(kv.first);
-        } else {
-          runtime.push_back(kv.first);
-        }
-      }
-
-      std::sort(runtime.begin(), runtime.end());
-      std::sort(syntax.begin(), syntax.end());
-      std::sort(user.begin(), user.end());
-
-      std::cout << "Syntax:  ";
-      for (auto &n : syntax)
-        std::cout << n << " ";
-      std::cout << "\n\nRuntime: ";
-      for (auto &n : runtime)
-        std::cout << n << " ";
-      std::cout << "\n\nUser:    ";
-      for (auto &n : user)
+				words.push_back(kv.first);
+			}
+			std::sort(words.begin(), words.end());
+      for (auto &n : words)
         std::cout << n << " ";
       std::cout << "\n";
     });
@@ -1025,34 +989,8 @@ private:
         continue;
       }
 
-      if (t == "do") {
-        emit(make("(do)"));
-        cstack.push_back((int)prog.size());
-        leave_stack.push_back({});
-        continue;
-      }
-      if (t == "leave") {
-        emit(make("branch", 0)); // Dummy branch to be patched later
-        if (leave_stack.empty())
-          throw std::runtime_error("LEAVE outside DO-LOOP");
-        leave_stack.back().push_back((int)prog.size() - 1);
-        continue;
-      }
-      if (t == "loop" || t == "+loop") {
-        int addr = cstack.back();
-        cstack.pop_back();
-        std::string op = (t == "loop") ? "(loop)" : "(+loop)";
-        emit(make(op, addr));
-
-        // Patch all LEAVEs for this loop level
-        int exit_addr = (int)prog.size();
-        for (int patch_me : leave_stack.back()) {
-          prog[patch_me].ival = exit_addr;
-        }
-        leave_stack.pop_back(); // Remove this loop's layer
-        continue;
-      }
-      if (t == "begin") {
+      
+            if (t == "begin") {
         // Mark the start of the loop
         cstack.push_back((int)prog.size());
         continue;
