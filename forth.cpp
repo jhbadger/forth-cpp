@@ -65,7 +65,21 @@ struct Entry {
 // ---------------------------------------------------------
 class Forth {
 public:
-  Forth() : heap({10, 0}) {} // heap[0] = BASE = 10 , heap[1] = STATE
+	int base_addr = 0;
+	int state_addr;
+  Forth() {
+		int addr = heap.size();
+		heap.resize(addr + cell);
+		
+		int initial_base_val = 10;
+		int initial_state_val = 0;
+		memcpy(&heap[addr], &initial_base_val, cell);
+		addr = heap.size();
+		heap.resize(heap.size() + cell); // Make space for the state variable
+		memcpy(&heap[addr], &initial_state_val, cell);
+		state_addr = cell;
+	}
+	
   void repl(int argc, char *argv[]);
 
 private:
@@ -81,11 +95,9 @@ private:
   std::vector<Ins> prog;
   std::vector<int> cstack;
   int does_pos = -1;
-
-  int base_addr = 0;
-  int state_addr = 1;
-  std::vector<int> heap;
-  std::unordered_map<std::string, std::string> help_db;
+	int cell = sizeof(int);
+	std::vector<uint8_t> heap;
+	  std::unordered_map<std::string, std::string> help_db;
 
   // Locals frames live on a separate typed stack to keep rstack simple
   std::vector<std::vector<int>> lframes;
@@ -517,25 +529,44 @@ private:
     });
     dict["then"].is_immediate = true;
     // Memory
-    prim("@", [&] {
-      int addr = pop();
-      if (addr < 0 || addr >= (int)heap.size())
-        throw std::runtime_error("Invalid heap address " +
-                                 std::to_string(addr));
-      push(heap[addr]);
-    });
-    prim("!", [&] {
-      int addr = pop();
-      int val = pop();
-      if (addr < 0 || addr >= (int)heap.size())
-        throw std::runtime_error("Invalid heap address " +
-                                 std::to_string(addr));
-      heap[addr] = val;
-    });
-    prim("cell+", [&] { push(pop() + 1); });
-    prim("cell", [&] { push(1); });
-    prim("cells", [&] { /* no-op */ });
-    prim(",", [&] { heap.push_back(pop()); });
+		prim("@", [&] {
+			int addr = pop();
+			int x = 0; // Default to 0 if address is bad
+
+			if (addr + cell <= heap.size()) {
+        // Copy bytes from the heap into 'x'
+        memcpy(&x, &heap[addr], cell);
+			} else {
+        // Handle out-of-bounds read, maybe print an error
+			}
+			push(x);
+		});
+		prim("!", [&] {
+			int addr = pop();
+			int x = pop();
+
+			// Ensure heap has enough space, resize if needed
+			if (addr + cell > heap.size()) {
+        heap.resize(addr + cell);
+			}
+    
+			// Copy the bytes of 'x' into the heap at 'addr'
+			memcpy(&heap[addr], &x, cell);
+		});
+   
+    prim("cell+", [&] { push(pop()+sizeof(int)); });
+    prim("cell", [&] { push(sizeof(int)); });
+    prim("cells", [&] { push(pop()*sizeof(int));});
+    prim(",", [&] {
+    int x = pop();
+    int addr = heap.size(); // current 'here'
+    
+    // Reserve space for one cell
+    heap.resize(addr + cell);
+    
+    // Copy the bytes of 'x' into the new space
+    memcpy(&heap[addr], &x, cell);
+});
     prim("here", [&] { push(heap.size()); });
     prim("create", [&] { /* no-op */ });
     prim("fill", [&] {
@@ -561,10 +592,30 @@ private:
       }
       std::cout << "\n";
     });
-    // c words are functionally the same in this forth
-    dict["c!"] = dict["!"];
-    dict["c@"] = dict["@"];
-    dict["c,"] = dict[","];
+		// --- CHAR STORE (c!) ---
+// ( char c-addr -- )
+prim("c!", [&] {
+    int addr = pop();
+    int val = pop(); // Still pops a cell, but we only use the low byte
+
+    if (addr < heap.size()) {
+        heap[addr] = (uint8_t)val;
+    }
+});
+
+prim("c!", [&] {
+    int addr = pop();
+    int val = pop(); // Still pops a cell, but we only use the low byte
+
+    if (addr < heap.size()) {
+        heap[addr] = (uint8_t)val;
+    }
+});
+prim("c@", [&] {
+    int addr = pop();
+    push(addr < heap.size() ? heap[addr] : 0);
+});
+ 
     // Output
     prim(".", [&] { std::cout << format_int(pop(), heap[base_addr]) << " "; });
     prim("emit", [&] { std::cout << (char)pop(); });
@@ -684,7 +735,7 @@ private:
       rstack.pop_back(); // drop limit
     });
 		prim("recurse", [&] {
-        emit(make("call", current));
+			emit(make("call", current));
     });
 		dict["recurse"].is_immediate = true;
 		
