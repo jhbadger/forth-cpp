@@ -261,17 +261,14 @@ does>
 if
   ( flag -- )
   Begins a conditional. If flag is 0, skips to ELSE or THEN.
-  Only valid inside a definition.
-
+  
 else
   ( -- )
   Separates the true and false branches of an IF...THEN block.
-  Only valid inside a definition.
 
 then
   ( -- )
   Closes an IF or IF...ELSE block.
-  Only valid inside a definition.
 
 endif
   ( -- )
@@ -280,27 +277,23 @@ endif
 do
   ( limit start -- )
   Begins a counted loop from start to limit-1.
-  Use I for the current index. Only valid inside a definition.
+  Use I for the current index. 
 
 loop
   ( -- )
   Increments the loop index by 1 and jumps back to DO if index < limit.
-  Only valid inside a definition.
 
 +loop
   ( n -- )
   Increments the loop index by n and jumps back to DO if not past limit.
-  Only valid inside a definition.
 
 leave
   ( -- )
   Immediately exits the enclosing DO loop.
-  Only valid inside a definition.
 
 begin
   ( -- )
   Marks the start of a BEGIN loop.
-  Only valid inside a definition.
 
 until
   ( flag -- )
@@ -310,12 +303,10 @@ until
 while
   ( flag -- )
   If flag is 0 exits a BEGIN...WHILE...REPEAT loop.
-  Only valid inside a definition.
 
 repeat
   ( -- )
   Unconditionally jumps back to BEGIN in a BEGIN...WHILE...REPEAT loop.
-  Only valid inside a definition.
 
 again
   ( -- )
@@ -325,7 +316,6 @@ again
 recurse
   ( -- )
   Compiles a call to the word currently being defined.
-  Only valid inside a definition.
 
 exit
   ( -- )

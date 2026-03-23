@@ -642,6 +642,33 @@ private:
 			leave_stack.back().push_back((int)prog.size() - 1);
 		});
     dict["leave"].is_immediate = true;
+		prim("begin", [&] {
+			// Mark the start of the loop
+			cstack.push_back((int)prog.size());
+    });
+		dict["begin"].is_immediate = true;
+    prim("until", [&]  {
+			// Pops a flag; if 0, jumps back to BEGIN
+			int target = cstack.back();
+			cstack.pop_back();
+			emit(make("0branch", target));
+		});
+		dict["until"].is_immediate = true;
+    prim("again", [&] {
+			// Unconditional jump back to BEGIN
+			int target = cstack.back();
+			cstack.pop_back();
+			emit(make("branch", target));
+    });
+		dict["again"].is_immediate = true;
+		prim("while", [&]  {
+			// Used in BEGIN ... WHILE ... REPEAT
+			// If flag is 0, jump out of the loop (to be patched by REPEAT)
+			emit(make("0branch", 0));
+			cstack.push_back((int)prog.size() -
+											 1); // Save address of the 0branch to patch
+    });
+		dict["while"].is_immediate = true;
     prim("j", [&] {
       // j is the index of the *outer* loop, sitting 2 slots below the top
       if (rstack.size() < 3)
@@ -703,33 +730,33 @@ private:
   void see_code(const std::vector<Ins> &code) {
     using SeeFunc = std::function<void(const Ins &)>;
     static const std::unordered_map<std::string, SeeFunc> table = {
-        {"lit", [](const Ins &i) { std::cout << "  lit " << i.ival << "\n"; }},
-        {"strlit",
-         [](const Ins &i) { std::cout << "  .\" " << i.sval << "\"\n"; }},
-        {"call", [](const Ins &i) { std::cout << "  " << i.sval << "\n"; }},
-        {"branch",
-         [](const Ins &i) { std::cout << "  branch -> " << i.ival << "\n"; }},
-        {"push-str",
-         [](const Ins &i) { std::cout << "  s\" " << i.sval << "\"\n"; }},
-        {"0branch",
-         [](const Ins &i) { std::cout << "  0branch -> " << i.ival << "\n"; }},
-        {"(do)", [](const Ins &) { std::cout << "  do\n"; }},
-        {"(loop)",
-         [](const Ins &i) { std::cout << "  loop -> " << i.ival << "\n"; }},
-        {"(+loop)",
-         [](const Ins &i) { std::cout << "  +loop -> " << i.ival << "\n"; }},
-        {"exit", [](const Ins &) { std::cout << "  exit\n"; }},
-        {"locals-enter",
-         [](const Ins &i) {
-           std::cout << "  { ";
-           for (auto &n : i.names)
-             std::cout << n << " ";
-           std::cout << "-- }\n";
-         }},
-        {"locals-exit", [](const Ins &) {}},
-        {"local@", [](const Ins &i) { std::cout << "  " << i.sval << "\n"; }},
-        {"local!",
-         [](const Ins &i) { std::cout << "  -> " << i.sval << "\n"; }},
+			{"lit", [](const Ins &i) { std::cout << "  lit " << i.ival << "\n"; }},
+			{"strlit",
+			 [](const Ins &i) { std::cout << "  .\" " << i.sval << "\"\n"; }},
+			{"call", [](const Ins &i) { std::cout << "  " << i.sval << "\n"; }},
+			{"branch",
+			 [](const Ins &i) { std::cout << "  branch -> " << i.ival << "\n"; }},
+			{"push-str",
+			 [](const Ins &i) { std::cout << "  s\" " << i.sval << "\"\n"; }},
+			{"0branch",
+			 [](const Ins &i) { std::cout << "  0branch -> " << i.ival << "\n"; }},
+			{"(do)", [](const Ins &) { std::cout << "  do\n"; }},
+			{"(loop)",
+			 [](const Ins &i) { std::cout << "  loop -> " << i.ival << "\n"; }},
+			{"(+loop)",
+			 [](const Ins &i) { std::cout << "  +loop -> " << i.ival << "\n"; }},
+			{"exit", [](const Ins &) { std::cout << "  exit\n"; }},
+			{"locals-enter",
+			 [](const Ins &i) {
+				 std::cout << "  { ";
+				 for (auto &n : i.names)
+					 std::cout << n << " ";
+				 std::cout << "-- }\n";
+			 }},
+			{"locals-exit", [](const Ins &) {}},
+			{"local@", [](const Ins &i) { std::cout << "  " << i.sval << "\n"; }},
+			{"local!",
+			 [](const Ins &i) { std::cout << "  -> " << i.sval << "\n"; }},
     };
 
     for (auto &ins : code) {
@@ -939,7 +966,7 @@ private:
           ne.kind = Entry::CREATE;
           ne.body_addr = body_addr;
           ne.does_code =
-              it->second.does_code; // Inherit the behavior after does>
+						it->second.does_code; // Inherit the behavior after does>
           dict[new_name] = ne;
 
           run(it->second.code);
@@ -990,36 +1017,7 @@ private:
       }
 
       
-            if (t == "begin") {
-        // Mark the start of the loop
-        cstack.push_back((int)prog.size());
-        continue;
-      }
-
-      if (t == "until") {
-        // Pops a flag; if 0, jumps back to BEGIN
-        int target = cstack.back();
-        cstack.pop_back();
-        emit(make("0branch", target));
-        continue;
-      }
-
-      if (t == "again") {
-        // Unconditional jump back to BEGIN
-        int target = cstack.back();
-        cstack.pop_back();
-        emit(make("branch", target));
-        continue;
-      }
-
-      if (t == "while") {
-        // Used in BEGIN ... WHILE ... REPEAT
-        // If flag is 0, jump out of the loop (to be patched by REPEAT)
-        emit(make("0branch", 0));
-        cstack.push_back((int)prog.size() -
-                         1); // Save address of the 0branch to patch
-        continue;
-      }
+       
       if (t == "create") {
         // Inside a defining word, create is handled at invocation time
         // by the DEFINING entry mechanism — nothing to emit
@@ -1034,7 +1032,7 @@ private:
 
         emit(make("branch", begin_addr)); // Loop back to start
         prog[while_addr].ival =
-            (int)prog.size(); // Patch WHILE to jump here on failure
+					(int)prog.size(); // Patch WHILE to jump here on failure
         continue;
       }
       if (t == "{") {
