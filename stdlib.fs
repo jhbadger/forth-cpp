@@ -41,8 +41,6 @@ s" ( addr len -- ) prints content of array starting from addr" help-set
 : max   2dup > if drop else swap drop then ;
 
 \ -- Logic -----------------------------------------------------------
-: and   * 0= 0= ;
-: or    + 0= 0= ;
 : not   0= ;
 : <>    = not ;
 : <=    > not ;

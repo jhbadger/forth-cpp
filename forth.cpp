@@ -369,7 +369,9 @@ private:
       int b = pop(), a = pop();
       push(a % b);
     });
-
+		prim("and", [&] { int b = pop(), a = pop(); push(a & b); });
+		prim("or",  [&] { int b = pop(), a = pop(); push(a | b); });
+		prim("invert", [&] { push(~pop()); }); // bitwise NOT
     // Return stack
     prim(">r", [&] { rpush(pop()); });
     prim("r>", [&] { push(rpop()); });
@@ -393,17 +395,17 @@ private:
     // Comparisons
     prim("=", [&] {
       int b = pop(), a = pop();
-      push(a == b ? 1 : 0);
+      push(a == b ? -1 : 0);
     });
     prim("<", [&] {
       int b = pop(), a = pop();
-      push(a < b ? 1 : 0);
+      push(a < b ? -1 : 0);
     });
     prim(">", [&] {
       int b = pop(), a = pop();
-      push(a > b ? 1 : 0);
+      push(a > b ? -1 : 0);
     });
-    prim("0=", [&] { push(pop() == 0 ? 1 : 0); });
+    prim("0=", [&] { push(pop() == 0 ? -1 : 0); });
 
     // Strings
 
