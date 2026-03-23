@@ -20,6 +20,13 @@ s" ( addr len -- ) prints content of array starting from addr" help-set
 -1 constant true
 0  constant false
 
+\ -- Stack helpers ---------------------------------------------------
+: 2dup   over over ;
+: 2drop  drop drop ;
+: 2swap  rot >r rot r> ;
+: nip    swap drop ;
+: tuck   swap over ;
+: ?dup   dup if dup then ;
 
 \ -- Arithmetic helpers ----------------------------------------------
 : 1+   1 + ;
@@ -32,14 +39,6 @@ s" ( addr len -- ) prints content of array starting from addr" help-set
 : abs   dup 0 < if negate then ;
 : min   2dup < if drop else swap drop then ;
 : max   2dup > if drop else swap drop then ;
-
-\ -- Stack helpers ---------------------------------------------------
-: 2dup   over over ;
-: 2drop  drop drop ;
-: 2swap  rot >r rot r> ;
-: nip    swap drop ;
-: tuck   swap over ;
-: ?dup   dup if dup then ;
 
 \ -- Logic -----------------------------------------------------------
 : and   * 0= 0= ;

@@ -860,7 +860,61 @@ private:
         }
         continue;
       }
-
+      if (t == "help") {
+        if (i + 1 >= (int)tokens.size()) {
+          // bare "help" lists all words that have help entries
+          std::vector<std::string> names;
+          for (auto &kv : help_db)
+            names.push_back(kv.first);
+          std::sort(names.begin(), names.end());
+          std::cout << "Words with help entries:\n  ";
+          for (auto &n : names)
+            std::cout << n << " ";
+          std::cout << "\n";
+        } else {
+          std::string name = lower(tokens[++i]);
+          auto it = help_db.find(name);
+          if (it != help_db.end()) {
+            std::cout << name << "\n" << it->second;
+          } else {
+            // Fallback: at least confirm whether the word exists
+            if (dict.count(name))
+              std::cout << name << ": no help entry (word exists)\n";
+            else
+              std::cout << name << ": unknown word\n";
+          }
+        }
+        continue;
+      }
+      if (t == "see") {
+        std::string name = lower(tokens[++i]);
+        auto it = dict.find(name);
+        if (it == dict.end()) {
+          std::cout << "Unknown word: " << name << "\n";
+          continue;
+        }
+        Entry &e = it->second;
+        switch (e.kind) {
+        case Entry::PRIM:
+          std::cout << name << " is a primitive\n";
+          break;
+        case Entry::WORD:
+        case Entry::DEFINING:
+          std::cout << ": " << name << "\n";
+          see_code(e.code);
+          if (e.kind == Entry::DEFINING) {
+            std::cout << "does>\n";
+            see_code(e.does_code);
+          }
+          std::cout << ";\n";
+          break;
+        case Entry::CREATE:
+          std::cout << name << " is a created word, body addr=" << e.body_addr
+                    << "\n";
+          break;
+        }
+        continue;
+      }
       if (!heap[state_addr]) {
         if (t == "include") {
           std::string filename = tokens[++i];
@@ -873,32 +927,7 @@ private:
           edit_file(filename);
           continue;
         }
-        if (t == "help") {
-          if (i + 1 >= (int)tokens.size()) {
-            // bare "help" lists all words that have help entries
-            std::vector<std::string> names;
-            for (auto &kv : help_db)
-              names.push_back(kv.first);
-            std::sort(names.begin(), names.end());
-            std::cout << "Words with help entries:\n  ";
-            for (auto &n : names)
-              std::cout << n << " ";
-            std::cout << "\n";
-          } else {
-            std::string name = lower(tokens[++i]);
-            auto it = help_db.find(name);
-            if (it != help_db.end()) {
-              std::cout << name << "\n" << it->second;
-            } else {
-              // Fallback: at least confirm whether the word exists
-              if (dict.count(name))
-                std::cout << name << ": no help entry (word exists)\n";
-              else
-                std::cout << name << ": unknown word\n";
-            }
-          }
-          continue;
-        }
+
         if (t == "create") {
           std::string new_name = lower(tokens[++i]); // Grab "sizes"
           Entry ne;
@@ -922,35 +951,6 @@ private:
             push(index);
           } else {
             throw std::runtime_error("Unknown word: " + name);
-          }
-          continue;
-        }
-        if (t == "see") {
-          std::string name = lower(tokens[++i]);
-          auto it = dict.find(name);
-          if (it == dict.end()) {
-            std::cout << "Unknown word: " << name << "\n";
-            continue;
-          }
-          Entry &e = it->second;
-          switch (e.kind) {
-          case Entry::PRIM:
-            std::cout << name << " is a primitive\n";
-            break;
-          case Entry::WORD:
-          case Entry::DEFINING:
-            std::cout << ": " << name << "\n";
-            see_code(e.code);
-            if (e.kind == Entry::DEFINING) {
-              std::cout << "does>\n";
-              see_code(e.does_code);
-            }
-            std::cout << ";\n";
-            break;
-          case Entry::CREATE:
-            std::cout << name << " is a created word, body addr=" << e.body_addr
-                      << "\n";
-            break;
           }
           continue;
         }
@@ -1156,6 +1156,7 @@ private:
         }
         continue;
       }
+			throw std::runtime_error("Unknown word: " + t);
     }
   }
 };
@@ -1231,6 +1232,7 @@ void Forth::repl(int argc, char *argv[]) {
       heap[state_addr] = 0;
       does_pos = -1;
     }
+		dict.erase("__anon__");
   }
 }
 
