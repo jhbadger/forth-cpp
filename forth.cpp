@@ -84,7 +84,7 @@ private:
   int does_pos = -1;
 
   int base_addr = 0;
-	int state_addr = 1;
+  int state_addr = 1;
   std::vector<int> heap;
   std::unordered_map<std::string, std::string> help_db;
 
@@ -197,28 +197,32 @@ private:
     flush(); // catch last entry
   }
 
-	void load_file(const std::string &filename) {
+  void load_file(const std::string &filename) {
     std::ifstream f(filename);
-    if (!f) { std::cout << "Cannot open " << filename << "\n"; return; }
+    if (!f) {
+      std::cout << "Cannot open " << filename << "\n";
+      return;
+    }
     std::string line, accumulated;
     while (std::getline(f, line)) {
-			line = trim(line);
-			if (line.empty() || (line[0]=='#' && line[1]=='!')) continue;
-			accumulated += (accumulated.empty() ? "" : " ") + line;
-			// Only process when all open s" are closed
-			int opens = 0;
-			for (int i = 0; i < (int)accumulated.size(); i++) {
-				if (accumulated[i] == '"') opens++;
-			}
-			if (opens % 2 == 0) {
-				process(split(accumulated));
-				accumulated.clear();
-			}
+      line = trim(line);
+      if (line.empty() || (line[0] == '#' && line[1] == '!'))
+        continue;
+      accumulated += (accumulated.empty() ? "" : " ") + line;
+      // Only process when all open s" are closed
+      int opens = 0;
+      for (int i = 0; i < (int)accumulated.size(); i++) {
+        if (accumulated[i] == '"')
+          opens++;
+      }
+      if (opens % 2 == 0) {
+        process(split(accumulated));
+        accumulated.clear();
+      }
     }
     if (!accumulated.empty())
-			process(split(accumulated));
-	}  
-	
+      process(split(accumulated));
+  }
 
   static std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), ::tolower);
@@ -491,6 +495,26 @@ private:
     prim("octal", [&] { heap[base_addr] = 8; });
     prim("binary", [&] { heap[base_addr] = 2; });
 
+    // Control flow
+    prim("if", [&] {
+      emit(make("0branch", 0));
+      cstack.push_back((int)prog.size() - 1);
+    });
+    dict["if"].is_immediate = true;
+    prim("else", [&] {
+      emit(make("branch", 0));
+      int prev = cstack.back();
+      cstack.pop_back();
+      prog[prev].ival = (int)prog.size();
+      cstack.push_back((int)prog.size() - 1);
+    });
+    dict["else"].is_immediate = true;
+    prim("then", [&] {
+      int prev = cstack.back();
+      cstack.pop_back();
+      prog[prev].ival = (int)prog.size();
+    });
+    dict["then"].is_immediate = true;
     // Memory
     prim("@", [&] {
       int addr = pop();
@@ -559,7 +583,7 @@ private:
       std::cout << "]\n";
     });
     // Compiling
-		prim("state", [&] { push(state_addr); });
+    prim("state", [&] { push(state_addr); });
     prim("immediate", [&] {
       if (!last_word.empty()) {
         dict[last_word].is_immediate = true;
@@ -594,15 +618,15 @@ private:
       rstack.pop_back(); // drop index
       rstack.pop_back(); // drop limit
     });
-		prim("help-set", [&] {
-			int body_idx = pop();
-			int name_idx = pop();
-			if (name_idx < 0 || name_idx >= (int)string_table.size() ||
-					body_idx < 0 || body_idx >= (int)string_table.size())
+    prim("help-set", [&] {
+      int body_idx = pop();
+      int name_idx = pop();
+      if (name_idx < 0 || name_idx >= (int)string_table.size() ||
+          body_idx < 0 || body_idx >= (int)string_table.size())
         throw std::runtime_error("help-set: invalid string index");
-			help_db[lower(string_table[name_idx])] = string_table[body_idx] + "\n";
-		});
-		prim("bye", [&] {exit(0);});
+      help_db[lower(string_table[name_idx])] = string_table[body_idx] + "\n";
+    });
+    prim("bye", [&] { exit(0); });
     // Allot
     prim("allot", [&] {
       int n = pop();
@@ -643,13 +667,10 @@ private:
     syntax_parser(":");
     syntax_parser("char");
     syntax_parser("[char]");
-		syntax_parser("help");
-    
+    syntax_parser("help");
+
     // Compile-only: only valid inside : ... ;
     syntax_compile(";");
-    syntax_compile("if");
-    syntax_compile("else");
-    syntax_compile("then");
     syntax_compile("do");
     syntax_compile("loop");
     syntax_compile("+loop");
@@ -662,7 +683,7 @@ private:
     syntax_compile("does>");
     syntax_compile("recurse");
     syntax_compile("exit");
-		syntax_compile("[compile]");
+    syntax_compile("postpone");
     syntax_compile("{");
     syntax_compile("->");
     // Words
@@ -810,14 +831,36 @@ private:
           push(val);
         continue;
       }
-			if (t == "[compile]") {
-				std::string name = lower(tokens[++i]);
-				auto it = dict.find(name);
-				if (it == dict.end())
-					throw std::runtime_error("[compile]: unknown word: " + name);
-				emit(make("call", name));  // compile it regardless of immediate flag
-				continue;
-			}
+      if (t == "postpone") {
+        std::string name = lower(tokens[++i]);
+        auto it = dict.find(name);
+        if (it == dict.end())
+          throw std::runtime_error("postpone: unknown word: " + name);
+
+        if (it->second.is_immediate) {
+          // Immediate word: compile a direct call to it.
+          // When the enclosing word runs (at compile time of some outer word),
+          // this will execute the immediate word directly.
+          emit(make("call", name));
+        } else {
+          // Non-immediate word: compile code that will compile a call to it.
+          // We need to emit: lit <xt-of-name>, compile,
+          // At runtime this pushes the xt and calls compile, which emits the
+          // call.
+          auto xtit = std::find(xt_table.begin(), xt_table.end(), name);
+          int index;
+          if (xtit == xt_table.end()) {
+            xt_table.push_back(name);
+            index = (int)xt_table.size() - 1;
+          } else {
+            index = (int)std::distance(xt_table.begin(), xtit);
+          }
+          emit(make("lit", index));
+          emit(make("call", "compile,"));
+        }
+        continue;
+      }
+
       if (!heap[state_addr]) {
         if (t == "include") {
           std::string filename = tokens[++i];
@@ -830,32 +873,32 @@ private:
           edit_file(filename);
           continue;
         }
-				if (t == "help") {
-					if (i + 1 >= (int)tokens.size()) {
-						// bare "help" lists all words that have help entries
-						std::vector<std::string> names;
-						for (auto &kv : help_db)
-							names.push_back(kv.first);
-						std::sort(names.begin(), names.end());
-						std::cout << "Words with help entries:\n  ";
-						for (auto &n : names)
-							std::cout << n << " ";
-						std::cout << "\n";
-					} else {
-						std::string name = lower(tokens[++i]);
-						auto it = help_db.find(name);
-						if (it != help_db.end()) {
-							std::cout << name << "\n" << it->second;
-						} else {
-							// Fallback: at least confirm whether the word exists
-							if (dict.count(name))
+        if (t == "help") {
+          if (i + 1 >= (int)tokens.size()) {
+            // bare "help" lists all words that have help entries
+            std::vector<std::string> names;
+            for (auto &kv : help_db)
+              names.push_back(kv.first);
+            std::sort(names.begin(), names.end());
+            std::cout << "Words with help entries:\n  ";
+            for (auto &n : names)
+              std::cout << n << " ";
+            std::cout << "\n";
+          } else {
+            std::string name = lower(tokens[++i]);
+            auto it = help_db.find(name);
+            if (it != help_db.end()) {
+              std::cout << name << "\n" << it->second;
+            } else {
+              // Fallback: at least confirm whether the word exists
+              if (dict.count(name))
                 std::cout << name << ": no help entry (word exists)\n";
-							else
+              else
                 std::cout << name << ": unknown word\n";
-						}
-					}
-					continue;
-				}
+            }
+          }
+          continue;
+        }
         if (t == "create") {
           std::string new_name = lower(tokens[++i]); // Grab "sizes"
           Entry ne;
@@ -982,25 +1025,6 @@ private:
         continue;
       }
 
-      if (t == "if") {
-        emit(make("0branch", 0));
-        cstack.push_back((int)prog.size() - 1);
-        continue;
-      }
-      if (t == "else") {
-        emit(make("branch", 0));
-        int prev = cstack.back();
-        cstack.pop_back();
-        prog[prev].ival = (int)prog.size();
-        cstack.push_back((int)prog.size() - 1);
-        continue;
-      }
-      if (t == "then" || t == "endif") {
-        int prev = cstack.back();
-        cstack.pop_back();
-        prog[prev].ival = (int)prog.size();
-        continue;
-      }
       if (t == "do") {
         emit(make("(do)"));
         cstack.push_back((int)prog.size());
@@ -1145,7 +1169,7 @@ void Forth::repl(int argc, char *argv[]) {
   load_help(trim(dir) + "/help.txt");
   if (argc > 1)
     load_file(argv[1]);
-	std::cout << "BadgerForth 1.0\n";  
+  std::cout << "BadgerForth 1.0\n";
   while (true) {
 #ifdef USE_READLINE
     // readline() provides the prompt and returns a malloc'd char*
@@ -1171,7 +1195,30 @@ void Forth::repl(int argc, char *argv[]) {
       continue;
 
     try {
-      process(split(line));
+      auto tokens = split(line);
+      bool wrap = true;
+
+      if (!tokens.empty()) {
+        std::string first = lower(tokens[0]);
+        // Things that must not be wrapped
+        if (first == ":" || first == "include" || first == "edit" ||
+            first == "bye") {
+          wrap = false;
+        }
+        // Defining words that create persistent dict entries
+        // Check if the first token is a DEFINING word
+        auto it = dict.find(first);
+        if (it != dict.end() && it->second.kind == Entry::DEFINING) {
+          wrap = false;
+        }
+      }
+
+      if (wrap) {
+        process(split(": __anon__ " + line + " ; __anon__"));
+        dict.erase("__anon__");
+      } else {
+        process(tokens);
+      }
       std::cout << " ok\n";
     } catch (std::exception &e) {
       std::cout << "Error: " << e.what() << "\n";

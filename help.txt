@@ -196,19 +196,9 @@ compile,
   ( xt -- )
   Compiles a call to the word identified by execution token xt.
 
-[compile]
-  ( -- )
-  Syntax: [compile] wordname
-  Forces the next word to be compiled into the current definition
-  even if it is immediate. Only valid inside a definition.
-  Normally immediate words execute at compile time rather than
-  being compiled. [COMPILE] overrides this, inserting a call to
-  the immediate word into the bytecode instead of running it.
-  In standard Forth [COMPILE] is considered obsolete and replaced
-  by POSTPONE, which handles both immediate and non-immediate words
-  uniformly. [COMPILE] only works correctly with immediate words --
-  using it on a non-immediate word compiles a redundant extra call
-  since non-immediate words are already compiled by default.
+postpone 
+  ( "name" -  )
+  Compiles the compilation semantics of name
   		
 execute
   ( xt -- )

@@ -78,6 +78,9 @@ s" ( addr len -- ) prints content of array starting from addr" help-set
 \ outputs code for space
 : bl ( -- c ) 32 ;
 
+\ alias for then
+: endif postpone then ; immediate
+
 \ -- Double-cell memory ---------------------------------------------
 
 : 2!  ( lo hi addr -- )
