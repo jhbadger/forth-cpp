@@ -681,6 +681,12 @@ private:
       rstack.pop_back(); // drop index
       rstack.pop_back(); // drop limit
     });
+		prim("recurse", [&] {
+        emit(make("call", current));
+    });
+		dict["recurse"].is_immediate = true;
+		
+    // help
     prim("help-set", [&] {
       int body_idx = pop();
       int name_idx = pop();
@@ -700,7 +706,8 @@ private:
     prim("words", [&] {
       std::vector<std::string> words;
       for (auto &kv : dict) {
-				words.push_back(kv.first);
+				if (kv.first != "__anon__")
+					words.push_back(kv.first);
 			}
 			std::sort(words.begin(), words.end());
       for (auto &n : words)
@@ -1010,13 +1017,6 @@ private:
         does_pos = (int)prog.size();
         continue;
       }
-
-      if (t == "recurse") {
-        emit(make("call", current));
-        continue;
-      }
-
-      
        
       if (t == "create") {
         // Inside a defining word, create is handled at invocation time
@@ -1139,7 +1139,7 @@ void Forth::repl(int argc, char *argv[]) {
         std::string first = lower(tokens[0]);
         // Things that must not be wrapped
         if (first == ":" || first == "include" || first == "edit" ||
-            first == "bye") {
+            first == "bye" || first == "help") {
           wrap = false;
         }
         // Defining words that create persistent dict entries
