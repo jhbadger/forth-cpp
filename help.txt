@@ -20,19 +20,43 @@ mod
 
 =
   ( a b -- flag )
-  Returns 1 if a equals b, 0 otherwise.
+  Returns -1 if a equals b, 0 otherwise.
 
 <
   ( a b -- flag )
-  Returns 1 if a is less than b, 0 otherwise.
+  Returns -1 if a is less than b, 0 otherwise.
 
 >
   ( a b -- flag )
-  Returns 1 if a is greater than b, 0 otherwise.
+  Returns -1 if a is greater than b, 0 otherwise.
 
 0=
   ( n -- flag )
-  Returns 1 if n is zero, 0 otherwise.
+  Returns -1 if n is zero, 0 otherwise.
+
+and
+  ( a b -- n )
+  Bitwise AND of a and b.
+
+or
+  ( a b -- n )
+  Bitwise OR of a and b.
+
+xor
+  ( a b -- n )
+  Bitwise XOR of a and b.
+
+invert
+  ( n -- ~n )
+  Bitwise NOT of n. Inverts all bits.
+
+lshift
+  ( n amt -- n )
+  Shifts n left by amt bits.
+
+rshift
+  ( n amt -- n )
+  Shifts n right by amt bits (logical, zero-fills from left).
 
 >r
   ( n -- )
@@ -41,6 +65,10 @@ mod
 r>
   ( -- n )
   Moves top of return stack to data stack.
+
+r@
+  ( -- n )
+  Copies the top of the return stack to the data stack without removing it.
 
 dup
   ( n -- n n )
@@ -61,6 +89,15 @@ over
 rot
   ( a b c -- b c a )
   Rotates the third item to the top.
+
+depth
+  ( -- n )
+  Pushes the number of items currently on the data stack.
+
+pick
+  ( ... n -- ... val )
+  Copies the nth item from the top of stack (0-indexed).
+  0 pick is equivalent to dup.
 
 .
   ( n -- )
@@ -84,7 +121,7 @@ type
 
 s=
   ( idx1 idx2 -- flag )
-  Returns 1 if the two strings are equal, 0 otherwise.
+  Returns -1 if the two strings are equal, 0 otherwise.
 
 s+
   ( idx1 idx2 -- idx3 )
@@ -129,55 +166,55 @@ binary
 
 @
   ( addr -- n )
-  Fetches the value at heap address addr.
+  Fetches the integer value at byte address addr.
 
 !
   ( n addr -- )
-  Stores n at heap address addr.
+  Stores integer n at byte address addr.
 
 c@
   ( addr -- n )
-  Fetches a value from heap address addr. Identical to @ in this Forth.
+  Fetches a single byte from byte address addr.
 
 c!
   ( n addr -- )
-  Stores n at heap address addr. Identical to ! in this Forth.
+  Stores the low byte of n at byte address addr.
 
 cell
   ( -- n )
-  Pushes the size of one cell (1 in this Forth).
+  Pushes the size of one cell in bytes (4 on this platform).
 
 cell+
-  ( addr -- addr+1 )
-  Adds one cell size to an address.
+  ( addr -- addr+cell )
+  Adds one cell size (4 bytes) to an address.
 
 cells
-  ( n -- n )
-  No-op in this Forth since cell size is 1. Included for compatibility.
+  ( n -- n*cell )
+  Converts a cell count to a byte count. Multiplies by cell size.
 
 ,
   ( n -- )
-  Appends n to the heap at the current HERE position.
+  Appends one cell (4 bytes) to the heap at the current HERE position.
 
 c,
   ( n -- )
-  Appends n to the heap at HERE. Identical to , in this Forth.
+  Appends a single byte to the heap at HERE.
 
 here
   ( -- addr )
-  Pushes the address of the next free heap cell.
+  Pushes the byte address of the next free heap location.
 
 allot
   ( n -- )
-  Reserves n cells on the heap, advancing HERE.
+  Reserves n bytes on the heap, advancing HERE by n.
 
 fill
   ( addr len val -- )
-  Fills len heap cells starting at addr with val.
+  Fills len bytes starting at addr with the low byte of val.
 
 dump
   ( addr len -- )
-  Prints len heap cells starting at addr.
+  Prints len bytes starting at addr.
 
 i
   ( -- n )
@@ -196,10 +233,13 @@ compile,
   ( xt -- )
   Compiles a call to the word identified by execution token xt.
 
-postpone 
-  ( "name" -  )
-  Compiles the compilation semantics of name
-  		
+postpone
+  ( "name" -- )
+  Compiles the compilation semantics of name into the current definition.
+  For immediate words: compiles a call that runs at the enclosing word's
+  compile time. For non-immediate words: compiles code that will compile
+  a call to name when the current word runs.
+
 execute
   ( xt -- )
   Executes the word identified by execution token xt.
@@ -211,12 +251,13 @@ immediate
 
 words
   ( -- )
-  Prints all known words grouped by category.
+  Prints all known words in the dictionary.
 
 '
   ( -- xt )
   Syntax: ' wordname
   Pushes the execution token of the named word.
+  In compile mode, compiles the xt as a literal.
 
 see
   ( -- )
@@ -261,39 +302,46 @@ does>
 if
   ( flag -- )
   Begins a conditional. If flag is 0, skips to ELSE or THEN.
-  
+  Only valid inside a definition.
+
 else
   ( -- )
   Separates the true and false branches of an IF...THEN block.
+  Only valid inside a definition.
 
 then
   ( -- )
   Closes an IF or IF...ELSE block.
+  Only valid inside a definition.
 
 endif
   ( -- )
-  Alias for THEN.
+  Alias for THEN. Only valid inside a definition.
 
 do
   ( limit start -- )
   Begins a counted loop from start to limit-1.
-  Use I for the current index. 
+  Use I for the current index. Only valid inside a definition.
 
 loop
   ( -- )
   Increments the loop index by 1 and jumps back to DO if index < limit.
+  Only valid inside a definition.
 
 +loop
   ( n -- )
   Increments the loop index by n and jumps back to DO if not past limit.
+  Only valid inside a definition.
 
 leave
   ( -- )
   Immediately exits the enclosing DO loop.
+  Only valid inside a definition.
 
 begin
   ( -- )
   Marks the start of a BEGIN loop.
+  Only valid inside a definition.
 
 until
   ( flag -- )
@@ -302,11 +350,13 @@ until
 
 while
   ( flag -- )
-  If flag is 0 exits a BEGIN...WHILE...REPEAT loop.
+  If flag is 0, exits a BEGIN...WHILE...REPEAT loop.
+  Only valid inside a definition.
 
 repeat
   ( -- )
   Unconditionally jumps back to BEGIN in a BEGIN...WHILE...REPEAT loop.
+  Only valid inside a definition.
 
 again
   ( -- )
@@ -316,6 +366,7 @@ again
 recurse
   ( -- )
   Compiles a call to the word currently being defined.
+  Only valid inside a definition.
 
 exit
   ( -- )
@@ -393,8 +444,42 @@ state
   Pushes the address of the STATE variable in the heap.
   STATE holds 1 if the interpreter is in compile mode, 0 if in
   interpret mode. Use @ to fetch the current value.
-	STATE is set to 1 when : begins a definition and back to 0
+  STATE is set to 1 when : begins a definition and back to 0
   when ; ends it. It is also reset to 0 if an error occurs.
-	Directly storing to STATE with ! is possible but risky -- use
-  [ and ] instead to switch modes cleanly inside a definition.
-	
+
+info
+  ( -- )
+  BadgerForth -- a lightweight Forth interpreter written in C++.
+  Architecture:
+    Compiles to an internal bytecode (Op enum) dispatched via switch.
+    Each instruction has an opcode, an integer field, and a string field.
+  Memory model:
+    A byte vector (heap) serves as the address space.
+    Cell size is 4 bytes (sizeof int). BASE is at heap[0], STATE at heap[4].
+    HERE and ALLOT operate on byte addresses.
+  String model:
+    Strings are stored in a separate string_table vector.
+    Most string words operate on integer indices into this table.
+    s" pushes an index, TYPE prints by index, s+ concatenates.
+  Dictionary:
+    Words are stored in a deque<Entry> for pointer stability.
+    A name->index map provides O(1) lookup.
+    Four kinds of entry: PRIM, WORD, DEFINING, and CREATE.
+    Each entry has a unique integer execution token (xt).
+  Locals:
+    Supported via { a b c -- } syntax inside definitions.
+    Locals are stored in a separate lframes stack.
+  Compilation:
+    Words compile to Op::Call (name-based) during compilation.
+    At ; time a resolve pass patches Call -> CallDirect (index-based)
+    for all words already in the dictionary, giving O(1) dispatch.
+    Unresolved calls (forward references) remain as Op::Call and
+    resolve via dictionary lookup at runtime.
+  Control flow:
+    IF ELSE THEN, BEGIN UNTIL, BEGIN WHILE REPEAT, BEGIN AGAIN,
+    DO LOOP, DO +LOOP, LEAVE, EXIT, RECURSE.
+  REPL:
+    Lines containing only expressions are wrapped in an anonymous
+    definition and executed, allowing IF, DO, loops etc. at the prompt.
+    Lines starting a definition (:), containing CREATE, or invoking a
+    DEFINING word are passed through unwrapped.

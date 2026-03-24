@@ -1,100 +1,94 @@
-\ -- Variable and Constant defined in Forth ------------------------
+\ -- Variable, Constant, Array -----------------------------------------
 
-: variable create 0 , does> ; 
+: variable create 0 , does> ;
 : constant create , does> @ ;
-: ? @ . ;
-: +!  dup @ rot + swap ! ;  
-: array create does> swap cell * + ;
+: ?        @ . ;
+: +!       dup @ rot + swap ! ;
+\ array: allocates n cells, created word pushes base address
+\ use: n array myarr  then  myarr = base addr,  n myarr arr@ = element addr
+: array    create cells allot does> ;
+: arr@     ( idx arr-addr -- elem-addr )  swap cells + ;
 
 : print-array ( addr len -- )
   0 do
-    dup i cells +  ( addr addr[i] )
-    @ .            ( addr value )
+    dup i cells +
+    @ .
   loop
   drop ;
 
-s" print-array" 
+s" print-array"
 s" ( addr len -- ) prints content of array starting from addr" help-set
 
-\ - Boolean constants ----------------------------------------------
+\ -- Boolean constants -------------------------------------------------
 -1 constant true
 0  constant false
 
-\ -- Stack helpers ---------------------------------------------------
+\ -- Stack helpers -----------------------------------------------------
 : 2dup   over over ;
 : 2drop  drop drop ;
-: 2swap  rot >r rot r> ;
+\ 2swap: standard ( a b c d -- c d a b )
+: 2swap  { a b c d -- } c d a b ;
 : nip    swap drop ;
 : tuck   swap over ;
 : ?dup   dup if dup then ;
 
-\ -- Arithmetic helpers ----------------------------------------------
-: 1+   1 + ;
-: 1-   1 - ;
-: 2+   2 + ;
-: 2-   2 - ;
-: 2*   2 * ;
-: 2/   2 / ;
-: negate   0 swap - ;
-: abs   dup 0 < if negate then ;
-: min   2dup < if drop else swap drop then ;
-: max   2dup > if drop else swap drop then ;
+\ -- Arithmetic helpers ------------------------------------------------
+: 1+     1 + ;
+: 1-     1 - ;
+: 2+     2 + ;
+: 2-     2 - ;
+: 2*     2 * ;
+: 2/     2 / ;
+: negate 0 swap - ;
+: abs    dup 0 < if negate then ;
+: min    2dup < if drop else swap drop then ;
+: max    2dup > if drop else swap drop then ;
 
-\ -- Logic -----------------------------------------------------------
-: not   0= ;
-: <>    = not ;
-: <=    > not ;
-: >=    < not ;
+\ -- Logic -------------------------------------------------------------
+\ Note: and/or/xor/invert are bitwise primitives.
+\ not, <>, <=, >= are defined in terms of comparisons.
+: not  0= ;
+: <>   = not ;
+: <=   > not ;
+: >=   < not ;
 
-\ -- Output helpers --------------------------------------------------
+\ -- Output helpers ----------------------------------------------------
 : space    32 emit ;
-: spaces   0 do space loop ;
+: spaces   dup 0 > if 0 do space loop else drop then ;
 : .cr      . cr ;
 
-\ -- Loop helpers ----------------------------------------------------
-: between   ( n lo hi -- flag )  rot tuck > rot rot > not and ;
+\ -- Loop helpers ------------------------------------------------------
+\ between: ( n lo hi -- flag )  true if lo <= n < hi
+: between  { n lo hi -- flag }  n lo >= n hi < and ;
 
-\ -- Base helpers ----------------------------------------------------
-\ show top of stack in binary but leave the number unchanged
-: .bin { n -- n } base @ 2 base ! n . base ! n ;
-
-\ show top of stack in octal but leave the number unchanged
-: .oct { n -- n } base @ 8 base ! n . base ! n ;
-
-\ show top of stack in decimal but leave the number unchanged
-: .dec { n -- n } base @ 10 base ! n . base ! n ;
-
-\ show top of stack in hex but leave the number unchanged
-: .hex { n -- n } base @ 16 base ! n . base ! n ;
-
-\ show top of stack in various bases but leave the number unchanged
+\ -- Base helpers ------------------------------------------------------
+\ Each word prints n in the given base, restores original base, leaves n.
+: .bin { n -- n } base @ >r 2  base ! n . r> base ! n ;
+: .oct { n -- n } base @ >r 8  base ! n . r> base ! n ;
+: .dec { n -- n } base @ >r 10 base ! n . r> base ! n ;
+: .hex { n -- n } base @ >r 16 base ! n . r> base ! n ;
 : .nums ( n -- n ) .bin .oct .dec .hex ;
 
-\ misc words
-
-\ outputs code for space
-: bl ( -- c ) 32 ;
+\ -- Misc --------------------------------------------------------------
+: bl     ( -- 32 ) 32 ;
 
 \ alias for then
 : endif postpone then ; immediate
 
-\ -- Double-cell memory ---------------------------------------------
-
+\ -- Double-cell memory -----------------------------------------------
+\ 2! ( lo hi addr -- )  stores lo at addr, hi at addr+cell
 : 2!  ( lo hi addr -- )
-  DUP >R ! R> 1+ ! ;
+  dup >r cell+ !  r> ! ;
 
+\ 2@ ( addr -- lo hi )  fetches lo from addr, hi from addr+cell
 : 2@  ( addr -- lo hi )
-  DUP @ SWAP 1+ @ ;
+  dup @  swap cell+ @ ;
 
-\ -- Double-cell return stack ---------------------------------------
+\ -- Double-cell return stack -----------------------------------------
+: 2>r  ( lo hi -- )   swap >r >r ;
+: 2r>  ( -- lo hi )   r> r> swap ;
 
-: 2>r  ( lo hi -- )
-  SWAP >R >R ;
-
-: 2r>  ( -- lo hi )
-  R> R> SWAP ;
-
-\ -- Help entries for stdlib words ----------------------------------
+\ -- Help entries ------------------------------------------------------
 
 s" variable"
 s" ( -- )
@@ -124,10 +118,19 @@ Example: variable counter  1 counter +!"
 help-set
 
 s" array"
-s" ( -- )
-Creates an array. Usage: n array name
-Invoke with an index to get the address of that element.
-Example: 10 array scores  42 0 scores !  0 scores @ ."
+s" ( n -- )
+Creates an array of n cells. The created word pushes the base address.
+Use arr@ for indexed element addresses.
+Example: 10 array scores
+         42 0 scores arr@ !    ( store 42 at index 0 )
+         0 scores arr@ @  .    ( fetch index 0 => 42 )
+         scores 10 print-array ( print all 10 elements )"
+help-set
+
+s" arr@"
+s" ( idx addr -- elem-addr )
+Computes the address of element idx in an array at addr.
+Example: 3 scores arr@ @  ( fetch element 3 )"
 help-set
 
 s" true"
@@ -216,33 +219,43 @@ Copies the top item below the second item."
 help-set
 
 s" and"
-s" ( a b -- flag )
-Logical AND. Returns 1 if both a and b are non-zero."
+s" ( a b -- n )
+Bitwise AND of a and b."
 help-set
 
 s" or"
-s" ( a b -- flag )
-Logical OR. Returns 1 if either a or b is non-zero."
+s" ( a b -- n )
+Bitwise OR of a and b."
+help-set
+
+s" xor"
+s" ( a b -- n )
+Bitwise XOR of a and b."
+help-set
+
+s" invert"
+s" ( n -- ~n )
+Bitwise NOT of n."
 help-set
 
 s" not"
 s" ( flag -- flag )
-Logical NOT. Returns 1 if flag is 0, 0 otherwise."
+Logical NOT. Returns -1 if flag is 0, 0 otherwise."
 help-set
 
 s" <>"
 s" ( a b -- flag )
-Returns 1 if a and b are not equal, 0 otherwise."
+Returns -1 if a and b are not equal, 0 otherwise."
 help-set
 
 s" <="
 s" ( a b -- flag )
-Returns 1 if a is less than or equal to b, 0 otherwise."
+Returns -1 if a is less than or equal to b, 0 otherwise."
 help-set
 
 s" >="
 s" ( a b -- flag )
-Returns 1 if a is greater than or equal to b, 0 otherwise."
+Returns -1 if a is greater than or equal to b, 0 otherwise."
 help-set
 
 s" space"
@@ -252,7 +265,7 @@ help-set
 
 s" spaces"
 s" ( n -- )
-Prints n space characters."
+Prints n space characters. Does nothing if n <= 0."
 help-set
 
 s" .cr"
@@ -262,7 +275,7 @@ help-set
 
 s" between"
 s" ( n lo hi -- flag )
-Returns 1 if lo < n < hi, 0 otherwise. Bounds are exclusive."
+Returns -1 if lo <= n < hi, 0 otherwise."
 help-set
 
 s" .bin"
@@ -297,45 +310,44 @@ help-set
 
 s" ?dup"
 s" ( n -- n n | 0 )
-  Duplicates the top of stack only if it is non-zero.
-  If n is 0, leaves 0 unchanged and does not duplicate.
-  Useful for conditional loops where zero means done.
-  Example: 0 ?dup . => 0
-  Example: 3 ?dup . . => 3 3"
+Duplicates the top of stack only if it is non-zero.
+If n is 0, leaves 0 unchanged and does not duplicate.
+Example: 0 ?dup . => 0
+Example: 3 ?dup . . => 3 3"
 help-set
 
 s" 2!"
-s"  ( lo hi addr -- )
-  Stores a double-cell value at addr and addr+1.
-  lo is stored at addr, hi is stored at addr+1.
-  Example: variable x  2 cells allot
-           10 20 x 2!
-           x 2@ . .  => 10 20"
+s" ( lo hi addr -- )
+Stores lo at addr and hi at addr+cell.
+Example: variable x  1 cells allot
+         10 20 x 2!
+         x 2@ . .  => 20 10"
 help-set
 
 s" 2@"
-s"  ( addr -- lo hi )
-  Fetches a double-cell value from addr and addr+1.
-  Leaves lo then hi on the stack, hi on top.
-  Example: variable x  2 cells allot
-           10 20 x 2!
-           x 2@ . .  => 20 10"
+s" ( addr -- lo hi )
+Fetches lo from addr and hi from addr+cell.
+hi is on top of stack after fetch.
+Example: variable x  1 cells allot
+         10 20 x 2!
+         x 2@ . .  => 20 10"
 help-set
 
 s" 2>r"
-s"  ( lo hi -- )
-  Moves a double-cell value from the data stack to the return stack.
-  Order is preserved: 2r> will restore lo hi with hi on top.
-  Must be balanced with 2r> before the word exits.
-  Only valid inside a definition.
-  Example: : test  1 2 2>r  3 4  2r> . . . . ;
-           test => 2 1 4 3"
+s" ( lo hi -- )
+Moves a double-cell value from the data stack to the return stack.
+Must be balanced with 2r> before the word exits.
+Only valid inside a definition."
 help-set
 
 s" 2r>"
-s"  ( -- lo hi )
-  Moves a double-cell value from the return stack to the data stack.
-  Restores the pair pushed by 2>r with hi on top.
-  Only valid inside a definition.
-  See also: 2>r"
+s" ( -- lo hi )
+Moves a double-cell value from the return stack to the data stack.
+Restores the pair pushed by 2>r with hi on top.
+Only valid inside a definition."
+help-set
+
+s" r@"
+s" ( -- n )
+Copies the top of the return stack to the data stack without removing it."
 help-set
