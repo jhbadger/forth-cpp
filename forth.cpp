@@ -59,50 +59,82 @@ struct Entry {
   std::vector<Ins> does_code; // DEFINING does> / CREATE body
   int body_addr = 0;          // CREATE
   bool is_immediate = false;
+  int id = -1; // stable execution token (assigned at creation)
 };
 
-// -- Forth interpreter
-// ---------------------------------------------------------
+// -- Forth interpreter --------------------------------------------------------
 class Forth {
 public:
   int base_addr = 0;
   int state_addr;
-  Forth() {
-    int addr = heap.size();
-    heap.resize(addr + cell);
 
-    int initial_base_val = 10;
-    int initial_state_val = 0;
-    memcpy(&heap[addr], &initial_base_val, cell);
-    addr = heap.size();
-    heap.resize(heap.size() + cell); // Make space for the state variable
-    memcpy(&heap[addr], &initial_state_val, cell);
+  Forth() {
+    // heap[0..3]  = BASE  (int, default 10)
+    // heap[4..7]  = STATE (int, default 0)
+    heap.resize(2 * cell, 0);
+    int v = 10;
+    memcpy(&heap[0], &v, cell);
+    base_addr = 0;
     state_addr = cell;
   }
 
   void repl(int argc, char *argv[]);
 
 private:
+  static const int cell = sizeof(int);
+
   std::vector<int> stack;
   std::vector<int> rstack;
   std::vector<std::string> locals;
   std::vector<std::vector<int>> leave_stack;
+
   std::unordered_map<std::string, Entry> dict;
-  std::vector<std::string> xt_table;
+
+  // xt system: each Entry gets a unique integer id at creation.
+  // id_to_name lets execute/compile, go from id back to the dict key.
+  int next_id = 0;
+  std::unordered_map<int, std::string> id_to_name;
+
   std::vector<std::string> string_table;
   std::string last_word;
   std::string current;
   std::vector<Ins> prog;
   std::vector<int> cstack;
   int does_pos = -1;
-  int cell = sizeof(int);
+
   std::vector<uint8_t> heap;
   std::unordered_map<std::string, std::string> help_db;
 
   // Locals frames live on a separate typed stack to keep rstack simple
   std::vector<std::vector<int>> lframes;
 
-  // -- stack helpers ------------------------------------------------------
+  // -- heap helpers ----------------------------------------------------------
+  int heap_get(int addr) const {
+    if (addr < 0 || addr + cell > (int)heap.size())
+      throw std::runtime_error("heap_get: invalid address " +
+                               std::to_string(addr));
+    int v;
+    memcpy(&v, &heap[addr], cell);
+    return v;
+  }
+  void heap_set(int addr, int v) {
+    if (addr + cell > (int)heap.size())
+      heap.resize(addr + cell, 0);
+    memcpy(&heap[addr], &v, cell);
+  }
+  int get_base() const {
+    int v;
+    memcpy(&v, &heap[base_addr], cell);
+    return v;
+  }
+  int get_state() const {
+    int v;
+    memcpy(&v, &heap[state_addr], cell);
+    return v;
+  }
+  void set_state(int v) { memcpy(&heap[state_addr], &v, cell); }
+
+  // -- stack helpers ---------------------------------------------------------
   int pop() {
     if (stack.empty())
       throw std::runtime_error("Stack underflow");
@@ -121,26 +153,56 @@ private:
   }
   void rpush(int v) { rstack.push_back(v); }
 
-  void emit(Ins ins) { prog.push_back(ins); }
+  void emit_ins(Ins ins) { prog.push_back(ins); }
 
-  // -- number helpers -----------------------------------------------------
+  // -- dict helpers ----------------------------------------------------------
+  // Register a new entry and assign it a stable xt id.
+  void register_entry(const std::string &name, Entry e) {
+    e.id = next_id++;
+    id_to_name[e.id] = name;
+    dict[name] = std::move(e);
+  }
+
+  // Look up name by xt id.
+  const std::string &xt_to_name(int id) const {
+    auto it = id_to_name.find(id);
+    if (it == id_to_name.end())
+      throw std::runtime_error("execute: invalid execution token " +
+                               std::to_string(id));
+    return it->second;
+  }
+
+  // Get the xt (id) for a named word, registering it if needed.
+  // (Entries created before the xt system was in place — e.g. via
+  //  direct dict[] assignment — might have id == -1; this fixes them up.)
+  int name_to_xt(const std::string &name) {
+    auto it = dict.find(name);
+    if (it == dict.end())
+      throw std::runtime_error("name_to_xt: unknown word: " + name);
+    if (it->second.id == -1) {
+      it->second.id = next_id++;
+      id_to_name[it->second.id] = name;
+    }
+    return it->second.id;
+  }
+
+  // -- number helpers --------------------------------------------------------
   std::string format_int(int n, int base) {
     if (n == 0)
       return "0";
     const char *digits = "0123456789abcdef";
     bool neg = n < 0;
-    if (neg)
-      n = -n;
+    unsigned int u = neg ? (unsigned int)(-(n + 1)) + 1u : (unsigned int)n;
     std::string result;
-    while (n > 0) {
-      result = digits[n % base] + result;
-      n /= base;
+    while (u > 0) {
+      result = digits[u % base] + result;
+      u /= base;
     }
     return neg ? "-" + result : result;
   }
 
   std::pair<bool, int> try_parse(const std::string &t) {
-    int base = heap[base_addr];
+    int base = get_base();
     bool neg = !t.empty() && t[0] == '-';
     std::string s = neg ? t.substr(1) : t;
     if (s.empty())
@@ -162,7 +224,6 @@ private:
     const char *editor = std::getenv("EDITOR");
     if (!editor)
       editor = "vi";
-
     pid_t pid = fork();
     if (pid == 0) {
       execlp(editor, editor, filename.c_str(), nullptr);
@@ -178,25 +239,18 @@ private:
       std::cout << "Warning: could not open " << filename << "\n";
       return;
     }
-
-    std::string line;
-    std::string current_word;
-    std::string current_body;
-
+    std::string line, current_word, current_body;
     auto flush = [&] {
       if (!current_word.empty())
         help_db[current_word] = current_body;
     };
-
     while (std::getline(f, line)) {
-      // Blank line = end of entry
       if (trim(line).empty()) {
         flush();
         current_word.clear();
         current_body.clear();
         continue;
       }
-      // Line with no leading whitespace = word name
       if (line[0] != ' ' && line[0] != '\t') {
         flush();
         current_word = lower(trim(line));
@@ -205,7 +259,7 @@ private:
         current_body += trim(line) + "\n";
       }
     }
-    flush(); // catch last entry
+    flush();
   }
 
   void load_file(const std::string &filename) {
@@ -217,15 +271,13 @@ private:
     std::string line, accumulated;
     while (std::getline(f, line)) {
       line = trim(line);
-      if (line.empty() || (line[0] == '#' && line[1] == '!'))
+      if (line.empty() || (line.size() > 1 && line[0] == '#' && line[1] == '!'))
         continue;
       accumulated += (accumulated.empty() ? "" : " ") + line;
-      // Only process when all open s" are closed
       int opens = 0;
-      for (int i = 0; i < (int)accumulated.size(); i++) {
-        if (accumulated[i] == '"')
+      for (char c : accumulated)
+        if (c == '"')
           opens++;
-      }
       if (opens % 2 == 0) {
         process(split(accumulated));
         accumulated.clear();
@@ -239,7 +291,6 @@ private:
     std::transform(s.begin(), s.end(), s.begin(), ::tolower);
     return s;
   }
-
   static std::string trim(const std::string &s) {
     size_t a = s.find_first_not_of(" \t\r\n");
     if (a == std::string::npos)
@@ -247,7 +298,6 @@ private:
     size_t b = s.find_last_not_of(" \t\r\n");
     return s.substr(a, b - a + 1);
   }
-
   static std::vector<std::string> split(const std::string &s) {
     std::vector<std::string> out;
     std::istringstream ss(s);
@@ -257,7 +307,7 @@ private:
     return out;
   }
 
-  // -- bytecode runner ----------------------------------------------------
+  // -- bytecode runner -------------------------------------------------------
   void run(const std::vector<Ins> &code) {
     for (int pc = 0; pc < (int)code.size(); pc++) {
       const Ins &ins = code[pc];
@@ -287,7 +337,6 @@ private:
         lframes.pop_back();
       } else if (ins.op == "(do)") {
         int start = pop(), limit = pop();
-        // encode do-frame as two ints on rstack (limit then index)
         rpush(limit);
         rpush(start);
       } else if (ins.op == "(loop)") {
@@ -299,23 +348,20 @@ private:
           rpush(idx);
           pc = ins.ival - 1;
         } else {
-          rstack.pop_back(); // remove limit
+          rstack.pop_back();
         }
-      } else if (ins.op == "push-addr") {
-        push(ins.ival);
       } else if (ins.op == "(+loop)") {
         int step = pop();
         int idx = rstack.back();
         rstack.pop_back();
         int limit = rstack.back();
         idx += step;
-        // continues if we haven't crossed the limit in the step direction
         if ((step > 0 && idx < limit) || (step < 0 && idx >= limit)) {
           rstack.back() = limit;
           rpush(idx);
           pc = ins.ival - 1;
         } else {
-          rstack.pop_back(); // remove limit
+          rstack.pop_back();
         }
       }
     }
@@ -351,13 +397,17 @@ private:
     throw std::runtime_error("Unknown word: " + w);
   }
 
-  // -- primitives ---------------------------------------------------------
+  // -- primitives ------------------------------------------------------------
   void init_prims() {
+    // Helper to register a primitive with a fresh xt id.
     auto prim = [&](std::string name, std::function<void()> fn) {
       Entry e;
       e.kind = Entry::PRIM;
       e.prim = fn;
-      dict[name] = e;
+      register_entry(name, e);
+    };
+    auto make_immediate = [&](const std::string &name) {
+      dict[name].is_immediate = true;
     };
 
     // Arithmetic
@@ -375,10 +425,14 @@ private:
     });
     prim("/", [&] {
       int b = pop(), a = pop();
+      if (b == 0)
+        throw std::runtime_error("Division by zero");
       push(a / b);
     });
     prim("mod", [&] {
       int b = pop(), a = pop();
+      if (b == 0)
+        throw std::runtime_error("Division by zero");
       push(a % b);
     });
     prim("and", [&] {
@@ -389,28 +443,61 @@ private:
       int b = pop(), a = pop();
       push(a | b);
     });
-    prim("invert", [&] { push(~pop()); }); // bitwise NOT
+    prim("xor", [&] {
+      int b = pop(), a = pop();
+      push(a ^ b);
+    });
+    prim("invert", [&] { push(~pop()); });
+    prim("lshift", [&] {
+      int b = pop(), a = pop();
+      push(a << b);
+    });
+    prim("rshift", [&] {
+      int b = pop(), a = pop();
+      push((int)((unsigned)a >> b));
+    });
+
     // Return stack
     prim(">r", [&] { rpush(pop()); });
     prim("r>", [&] { push(rpop()); });
+    prim("r@", [&] {
+      if (rstack.empty())
+        throw std::runtime_error("r@ : return stack empty");
+      push(rstack.back());
+    });
 
     // Stack ops
-    prim("dup", [&] { push(stack.back()); });
+    prim("dup", [&] {
+      if (stack.empty())
+        throw std::runtime_error("dup: stack underflow");
+      push(stack.back());
+    });
     prim("drop", [&] { pop(); });
     prim("swap", [&] {
       int b = pop(), a = pop();
       push(b);
       push(a);
     });
-    prim("over", [&] { push(stack[stack.size() - 2]); });
+    prim("over", [&] {
+      if (stack.size() < 2)
+        throw std::runtime_error("over: stack underflow");
+      push(stack[stack.size() - 2]);
+    });
     prim("rot", [&] {
       int c = pop(), b = pop(), a = pop();
       push(b);
       push(c);
       push(a);
     });
+    prim("depth", [&] { push((int)stack.size()); });
+    prim("pick", [&] {
+      int n = pop();
+      if (n < 0 || n >= (int)stack.size())
+        throw std::runtime_error("pick: out of range");
+      push(stack[stack.size() - 1 - n]);
+    });
 
-    // Comparisons
+    // Comparisons — use -1 for true (ANS standard)
     prim("=", [&] {
       int b = pop(), a = pop();
       push(a == b ? -1 : 0);
@@ -426,75 +513,43 @@ private:
     prim("0=", [&] { push(pop() == 0 ? -1 : 0); });
 
     // Strings
-
-    // Output a string by its index: ( idx -- )
     prim("type", [&] {
       int idx = pop();
-      if (idx >= 0 && idx < (int)string_table.size()) {
-        std::cout << string_table[idx];
-      } else {
-        throw std::runtime_error("type: String index out of bounds: " +
+      if (idx < 0 || idx >= (int)string_table.size())
+        throw std::runtime_error("type: string index out of bounds: " +
                                  std::to_string(idx));
-      }
+      std::cout << string_table[idx];
     });
-
-    // String equality: ( idx1 idx2 -- flag )
     prim("s=", [&] {
-      int idxB = pop();
-      int idxA = pop();
-      if (idxA < 0 || idxA >= (int)string_table.size() || idxB < 0 ||
-          idxB >= (int)string_table.size()) {
-        throw std::runtime_error("s=: Invalid string index");
-      }
-      push(string_table[idxA] == string_table[idxB] ? 1 : 0);
+      int b = pop(), a = pop();
+      if (a < 0 || a >= (int)string_table.size() || b < 0 ||
+          b >= (int)string_table.size())
+        throw std::runtime_error("s=: invalid string index");
+      push(string_table[a] == string_table[b] ? -1 : 0);
     });
-
-    // String Concatenation: ( idx1 idx2 -- idx3 )
     prim("s+", [&] {
-      int idxB = pop();
-      int idxA = pop();
-
-      // Bounds checking
-      if (idxA < 0 || idxA >= (int)string_table.size() || idxB < 0 ||
-          idxB >= (int)string_table.size()) {
-        throw std::runtime_error("s+: Invalid string index");
-      }
-
-      // Perform the join and store the result as a new entry
-      std::string combined = string_table[idxA] + string_table[idxB];
-      string_table.push_back(combined);
-
-      // Push the index of the newly created string
+      int b = pop(), a = pop();
+      if (a < 0 || a >= (int)string_table.size() || b < 0 ||
+          b >= (int)string_table.size())
+        throw std::runtime_error("s+: invalid string index");
+      string_table.push_back(string_table[a] + string_table[b]);
       push((int)string_table.size() - 1);
     });
-
-    // clear string_table
-    prim("s.clear", [&] {
-      string_table.clear();
-      std::cout << "String table cleared.\n";
-    });
-
-    // print string_table
+    prim("s.clear", [&] { string_table.clear(); });
     prim("s.s", [&] {
       std::cout << "String Table (" << string_table.size() << " entries):\n";
-      for (size_t i = 0; i < string_table.size(); ++i) {
-        // We escape the string with quotes to see trailing spaces
+      for (size_t i = 0; i < string_table.size(); ++i)
         std::cout << "[" << i << "] \"" << string_table[i] << "\"\n";
-      }
     });
-
-    // Accept input and store as a new string: ( maxlen -- idx )
     prim("accept", [&] {
       int max_len = pop();
       std::string line;
       std::getline(std::cin, line);
-      if ((int)line.length() > max_len)
+      if ((int)line.size() > max_len)
         line = line.substr(0, max_len);
-
       string_table.push_back(line);
       push((int)string_table.size() - 1);
     });
-
     prim("key", [&] {
       struct termios old_t, new_t;
       tcgetattr(STDIN_FILENO, &old_t);
@@ -507,128 +562,197 @@ private:
       push((int)c);
     });
 
-    // Bases
+    // Bases — use heap_set so full int is written
     prim("base", [&] { push(base_addr); });
-    prim("hex", [&] { heap[base_addr] = 16; });
-    prim("decimal", [&] { heap[base_addr] = 10; });
-    prim("octal", [&] { heap[base_addr] = 8; });
-    prim("binary", [&] { heap[base_addr] = 2; });
+    prim("hex", [&] { heap_set(base_addr, 16); });
+    prim("decimal", [&] { heap_set(base_addr, 10); });
+    prim("octal", [&] { heap_set(base_addr, 8); });
+    prim("binary", [&] { heap_set(base_addr, 2); });
 
-    // Control flow
+    // Control flow (immediate)
     prim("if", [&] {
-      emit(make("0branch", 0));
+      emit_ins(make("0branch", 0));
       cstack.push_back((int)prog.size() - 1);
     });
-    dict["if"].is_immediate = true;
+    make_immediate("if");
+
     prim("else", [&] {
-      emit(make("branch", 0));
+      emit_ins(make("branch", 0));
       int prev = cstack.back();
       cstack.pop_back();
       prog[prev].ival = (int)prog.size();
       cstack.push_back((int)prog.size() - 1);
     });
-    dict["else"].is_immediate = true;
+    make_immediate("else");
+
     prim("then", [&] {
       int prev = cstack.back();
       cstack.pop_back();
       prog[prev].ival = (int)prog.size();
     });
-    dict["then"].is_immediate = true;
+    make_immediate("then");
+
+    prim("begin", [&] { cstack.push_back((int)prog.size()); });
+    make_immediate("begin");
+
+    prim("until", [&] {
+      int target = cstack.back();
+      cstack.pop_back();
+      emit_ins(make("0branch", target));
+    });
+    make_immediate("until");
+
+    prim("again", [&] {
+      int target = cstack.back();
+      cstack.pop_back();
+      emit_ins(make("branch", target));
+    });
+    make_immediate("again");
+
+    prim("while", [&] {
+      emit_ins(make("0branch", 0));
+      cstack.push_back((int)prog.size() - 1);
+    });
+    make_immediate("while");
+
+    prim("repeat", [&] {
+      int while_addr = cstack.back();
+      cstack.pop_back();
+      int begin_addr = cstack.back();
+      cstack.pop_back();
+      emit_ins(make("branch", begin_addr));
+      prog[while_addr].ival = (int)prog.size();
+    });
+    make_immediate("repeat");
+
+    prim("do", [&] {
+      emit_ins(make("(do)"));
+      cstack.push_back((int)prog.size());
+      leave_stack.push_back({});
+    });
+    make_immediate("do");
+
+    prim("loop", [&] {
+      int addr = cstack.back();
+      cstack.pop_back();
+      emit_ins(make("(loop)", addr));
+      int exit_addr = (int)prog.size();
+      for (int p : leave_stack.back())
+        prog[p].ival = exit_addr;
+      leave_stack.pop_back();
+    });
+    make_immediate("loop");
+
+    prim("+loop", [&] {
+      int addr = cstack.back();
+      cstack.pop_back();
+      emit_ins(make("(+loop)", addr));
+      int exit_addr = (int)prog.size();
+      for (int p : leave_stack.back())
+        prog[p].ival = exit_addr;
+      leave_stack.pop_back();
+    });
+    make_immediate("+loop");
+
+    prim("leave", [&] {
+      if (leave_stack.empty())
+        throw std::runtime_error("leave outside do-loop");
+      emit_ins(make("branch", 0));
+      leave_stack.back().push_back((int)prog.size() - 1);
+    });
+    make_immediate("leave");
+
+    prim("i", [&] { push(rstack.back()); });
+    prim("j", [&] {
+      if (rstack.size() < 3)
+        throw std::runtime_error("j used outside nested loop");
+      push(rstack[rstack.size() - 3]);
+    });
+    prim("unloop", [&] {
+      if (rstack.size() < 2)
+        throw std::runtime_error("unloop outside loop");
+      rstack.pop_back();
+      rstack.pop_back();
+    });
+
+    prim("recurse", [&] { emit_ins(make("call", current)); });
+    make_immediate("recurse");
+    prim("exit", [&] {
+      if (!locals.empty())
+        emit_ins(make("locals-exit"));
+      emit_ins(make("exit"));
+    });
+    make_immediate("exit");
+
     // Memory
     prim("@", [&] {
       int addr = pop();
-      int x = 0; // Default to 0 if address is bad
-
-      if (addr + cell <= heap.size()) {
-        // Copy bytes from the heap into 'x'
-        memcpy(&x, &heap[addr], cell);
-      } else {
-        // Handle out-of-bounds read, maybe print an error
-      }
-      push(x);
+      if (addr < 0 || addr + cell > (int)heap.size())
+        throw std::runtime_error("@: invalid address " + std::to_string(addr));
+      push(heap_get(addr));
     });
     prim("!", [&] {
       int addr = pop();
-      int x = pop();
-
-      // Ensure heap has enough space, resize if needed
-      if (addr + cell > heap.size()) {
-        heap.resize(addr + cell);
-      }
-
-      // Copy the bytes of 'x' into the heap at 'addr'
-      memcpy(&heap[addr], &x, cell);
-    });
-
-    prim("cell+", [&] { push(pop() + sizeof(int)); });
-    prim("cell", [&] { push(sizeof(int)); });
-    prim("cells", [&] { push(pop() * sizeof(int)); });
-    prim(",", [&] {
-      int x = pop();
-      int addr = heap.size(); // current 'here'
-
-      // Reserve space for one cell
-      heap.resize(addr + cell);
-
-      // Copy the bytes of 'x' into the new space
-      memcpy(&heap[addr], &x, cell);
-    });
-    prim("here", [&] { push(heap.size()); });
-    prim("create", [&] { /* no-op */ });
-    prim("fill", [&] {
-      int c = pop();
-      int l = pop();
-      int a = pop();
-      for (int i = a; i < a + l; i++) {
-        if (i < 0 || i >= (int)heap.size())
-          throw std::runtime_error("Invalid heap address " + std::to_string(i));
-        else
-          heap[i] = c;
-      }
-    });
-    prim("dump", [&] {
-      int l = pop();
-      int a = pop();
-      std::cout << a << " :";
-      for (int i = a; i < a + l; i++) {
-        if (i < 0 || i >= (int)heap.size())
-          throw std::runtime_error("Invalid heap address " + std::to_string(i));
-        else
-          std::cout << " " << heap[i];
-      }
-      std::cout << "\n";
-    });
-    // --- CHAR STORE (c!) ---
-    // ( char c-addr -- )
-    prim("c!", [&] {
-      int addr = pop();
-      int val = pop(); // Still pops a cell, but we only use the low byte
-
-      if (addr < heap.size()) {
-        heap[addr] = (uint8_t)val;
-      }
-    });
-
-    prim("c!", [&] {
-      int addr = pop();
-      int val = pop(); // Still pops a cell, but we only use the low byte
-
-      if (addr < heap.size()) {
-        heap[addr] = (uint8_t)val;
-      }
+      int val = pop();
+      heap_set(addr, val);
     });
     prim("c@", [&] {
       int addr = pop();
-      push(addr < heap.size() ? heap[addr] : 0);
+      if (addr < 0 || addr >= (int)heap.size())
+        throw std::runtime_error("c@: invalid address " + std::to_string(addr));
+      push(heap[addr]);
     });
+    prim("c!", [&] {
+      int addr = pop();
+      int val = pop();
+      if (addr < 0 || addr >= (int)heap.size())
+        throw std::runtime_error("c!: invalid address " + std::to_string(addr));
+      heap[addr] = (uint8_t)val;
+    });
+    prim("cell", [&] { push(cell); });
+    prim("cell+", [&] { push(pop() + cell); });
+    prim("cells", [&] { push(pop() * cell); });
+    prim(",", [&] {
+      int x = pop();
+      int addr = (int)heap.size();
+      heap.resize(addr + cell, 0);
+      memcpy(&heap[addr], &x, cell);
+    });
+    prim("c,", [&] {
+      int x = pop();
+      heap.push_back((uint8_t)x);
+    });
+    prim("here", [&] { push((int)heap.size()); });
+    prim("allot", [&] {
+      int n = pop();
+      if (n < 0)
+        throw std::runtime_error("allot: negative count");
+      heap.resize(heap.size() + n, 0);
+    });
+    prim("fill", [&] {
+      int val = pop(), len = pop(), addr = pop();
+      if (addr < 0 || addr + len > (int)heap.size())
+        throw std::runtime_error("fill: invalid range");
+      std::fill(heap.begin() + addr, heap.begin() + addr + len, (uint8_t)val);
+    });
+    prim("dump", [&] {
+      int len = pop(), addr = pop();
+      std::cout << addr << " :";
+      for (int i = addr; i < addr + len; i++) {
+        if (i < 0 || i >= (int)heap.size())
+          throw std::runtime_error("dump: invalid address");
+        std::cout << " " << (int)heap[i];
+      }
+      std::cout << "\n";
+    });
+    prim("create", [&] { /* no-op: handled at parser level */ });
 
     // Output
-    prim(".", [&] { std::cout << format_int(pop(), heap[base_addr]) << " "; });
+    prim(".", [&] { std::cout << format_int(pop(), get_base()) << " "; });
     prim("emit", [&] { std::cout << (char)pop(); });
     prim("cr", [&] { std::cout << "\n"; });
     prim("at-xy", [&] {
-      int y = pop();
-      int x = pop();
+      int y = pop(), x = pop();
       std::cout << "\033[" << (y + 1) << ";" << (x + 1) << "H" << std::flush;
     });
     prim(".s", [&] {
@@ -640,148 +764,57 @@ private:
       }
       std::cout << "]\n";
     });
-    // Compiling
+
+    // Compiling / execution tokens
+    // ' is handled in process() because it needs to consume the next token.
+    // execute and compile, use the xt id directly.
     prim("state", [&] { push(state_addr); });
     prim("immediate", [&] {
-      if (!last_word.empty()) {
+      if (!last_word.empty())
         dict[last_word].is_immediate = true;
-      }
     });
-    prim("compile,", [&] {
-      int index = pop();
-      std::string name = xt_table[index];
-      emit(make("call", name));
-    });
+
+    // execute ( xt -- ) : run the word whose id is on the stack
     prim("execute", [&] {
-      int index = pop();
-      if (index >= 0 && index < xt_table.size()) {
-        run_word(xt_table[index]);
-      }
+      int id = pop();
+      run_word(xt_to_name(id));
     });
 
-    // Loops
-    prim("do", [&] {
-      emit(make("(do)"));
-      cstack.push_back((int)prog.size());
-      leave_stack.push_back({});
+    // compile, ( xt -- ) : compile a call to the word whose id is on the stack
+    prim("compile,", [&] {
+      int id = pop();
+      emit_ins(make("call", xt_to_name(id)));
     });
-    dict["do"].is_immediate = true;
-    prim("loop", [&] {
-      int addr = cstack.back();
-      cstack.pop_back();
-      emit(make("(loop)", addr));
-      // Patch all LEAVEs for this loop level
-      int exit_addr = (int)prog.size();
-      for (int patch_me : leave_stack.back()) {
-        prog[patch_me].ival = exit_addr;
-      }
-      leave_stack.pop_back(); // Remove this loop's layer
-    });
-    dict["loop"].is_immediate = true;
-    prim("+loop", [&] {
-      int addr = cstack.back();
-      cstack.pop_back();
-      emit(make("(+loop)", addr));
-      // Patch all LEAVEs for this loop level
-      int exit_addr = (int)prog.size();
-      for (int patch_me : leave_stack.back()) {
-        prog[patch_me].ival = exit_addr;
-      }
-      leave_stack.pop_back(); // Remove this loop's layer
-    });
-    dict["+loop"].is_immediate = true;
-    prim("i", [&] {
-      // top of rstack is current index (pushed after limit)
-      push(rstack.back());
-    });
-    prim("leave", [&] {
-      emit(make("branch", 0)); // Dummy branch to be patched later
-      if (leave_stack.empty())
-        throw std::runtime_error("LEAVE outside DO-LOOP");
-      leave_stack.back().push_back((int)prog.size() - 1);
-    });
-    dict["leave"].is_immediate = true;
-    prim("begin", [&] {
-      // Mark the start of the loop
-      cstack.push_back((int)prog.size());
-    });
-    dict["begin"].is_immediate = true;
-    prim("until", [&] {
-      // Pops a flag; if 0, jumps back to BEGIN
-      int target = cstack.back();
-      cstack.pop_back();
-      emit(make("0branch", target));
-    });
-    dict["until"].is_immediate = true;
-    prim("again", [&] {
-      // Unconditional jump back to BEGIN
-      int target = cstack.back();
-      cstack.pop_back();
-      emit(make("branch", target));
-    });
-    dict["again"].is_immediate = true;
-    prim("while", [&] {
-      // Used in BEGIN ... WHILE ... REPEAT
-      // If flag is 0, jump out of the loop (to be patched by REPEAT)
-      emit(make("0branch", 0));
-      cstack.push_back((int)prog.size() -
-                       1); // Save address of the 0branch to patch
-    });
-    dict["while"].is_immediate = true;
-    prim("j", [&] {
-      // j is the index of the *outer* loop, sitting 2 slots below the top
-      if (rstack.size() < 3)
-        throw std::runtime_error("j used outside nested loop");
-      push(rstack[rstack.size() - 3]);
-    });
-    prim("unloop", [&] {
-      if (rstack.size() < 2)
-        throw std::runtime_error("unloop outside loop");
-      rstack.pop_back(); // drop index
-      rstack.pop_back(); // drop limit
-    });
-    prim("recurse", [&] { emit(make("call", current)); });
-    dict["recurse"].is_immediate = true;
 
-    // help
+    // Misc
     prim("help-set", [&] {
-      int body_idx = pop();
-      int name_idx = pop();
+      int body_idx = pop(), name_idx = pop();
       if (name_idx < 0 || name_idx >= (int)string_table.size() ||
           body_idx < 0 || body_idx >= (int)string_table.size())
         throw std::runtime_error("help-set: invalid string index");
       help_db[lower(string_table[name_idx])] = string_table[body_idx] + "\n";
     });
     prim("bye", [&] { exit(0); });
-    // Allot
-    prim("allot", [&] {
-      int n = pop();
-      heap.resize(heap.size() + n, 0);
-    });
-
-    // Words
     prim("words", [&] {
-      std::vector<std::string> words;
-      for (auto &kv : dict) {
+      std::vector<std::string> ws;
+      for (auto &kv : dict)
         if (kv.first != "__anon__")
-          words.push_back(kv.first);
-      }
-      std::sort(words.begin(), words.end());
-      for (auto &n : words)
+          ws.push_back(kv.first);
+      std::sort(ws.begin(), ws.end());
+      for (auto &n : ws)
         std::cout << n << " ";
       std::cout << "\n";
     });
   }
 
-  // -- string literal collector -------------------------------------------
-  // Returns {string, new_index}
+  // -- string literal collector ----------------------------------------------
   std::pair<std::string, int>
   collect_string(const std::vector<std::string> &tokens, int i, char delim) {
     std::string result;
     while (true) {
       i++;
       if (i >= (int)tokens.size())
-        throw std::runtime_error("Unterminated .\" string");
+        throw std::runtime_error("Unterminated string literal");
       if (tokens[i].back() == delim) {
         result += tokens[i].substr(0, tokens[i].size() - 1);
         return {result, i};
@@ -790,50 +823,46 @@ private:
     }
   }
 
-  // -- SEE decompiler helper ----------------------------------------------
+  // -- SEE decompiler --------------------------------------------------------
   void see_code(const std::vector<Ins> &code) {
-    using SeeFunc = std::function<void(const Ins &)>;
-    static const std::unordered_map<std::string, SeeFunc> table = {
-        {"lit", [](const Ins &i) { std::cout << "  lit " << i.ival << "\n"; }},
-        {"strlit",
-         [](const Ins &i) { std::cout << "  .\" " << i.sval << "\"\n"; }},
-        {"call", [](const Ins &i) { std::cout << "  " << i.sval << "\n"; }},
-        {"branch",
-         [](const Ins &i) { std::cout << "  branch -> " << i.ival << "\n"; }},
-        {"push-str",
-         [](const Ins &i) { std::cout << "  s\" " << i.sval << "\"\n"; }},
-        {"0branch",
-         [](const Ins &i) { std::cout << "  0branch -> " << i.ival << "\n"; }},
-        {"(do)", [](const Ins &) { std::cout << "  do\n"; }},
-        {"(loop)",
-         [](const Ins &i) { std::cout << "  loop -> " << i.ival << "\n"; }},
-        {"(+loop)",
-         [](const Ins &i) { std::cout << "  +loop -> " << i.ival << "\n"; }},
-        {"exit", [](const Ins &) { std::cout << "  exit\n"; }},
-        {"locals-enter",
-         [](const Ins &i) {
-           std::cout << "  { ";
-           for (auto &n : i.names)
-             std::cout << n << " ";
-           std::cout << "-- }\n";
-         }},
-        {"locals-exit", [](const Ins &) {}},
-        {"local@", [](const Ins &i) { std::cout << "  " << i.sval << "\n"; }},
-        {"local!",
-         [](const Ins &i) { std::cout << "  -> " << i.sval << "\n"; }},
-    };
-
     for (auto &ins : code) {
-      auto it = table.find(ins.op);
-      if (it != table.end())
-        it->second(ins);
+      if (ins.op == "lit")
+        std::cout << "  lit " << ins.ival << "\n";
+      else if (ins.op == "strlit")
+        std::cout << "  .\" " << ins.sval << "\"\n";
+      else if (ins.op == "call")
+        std::cout << "  " << ins.sval << "\n";
+      else if (ins.op == "branch")
+        std::cout << "  branch -> " << ins.ival << "\n";
+      else if (ins.op == "0branch")
+        std::cout << "  0branch -> " << ins.ival << "\n";
+      else if (ins.op == "push-str")
+        std::cout << "  s\" " << ins.sval << "\"\n";
+      else if (ins.op == "(do)")
+        std::cout << "  do\n";
+      else if (ins.op == "(loop)")
+        std::cout << "  loop -> " << ins.ival << "\n";
+      else if (ins.op == "(+loop)")
+        std::cout << "  +loop -> " << ins.ival << "\n";
+      else if (ins.op == "exit")
+        std::cout << "  exit\n";
+      else if (ins.op == "locals-enter") {
+        std::cout << "  { ";
+        for (auto &n : ins.names)
+          std::cout << n << " ";
+        std::cout << "-- }\n";
+      } else if (ins.op == "locals-exit") { /* nothing */
+      } else if (ins.op == "local@")
+        std::cout << "  " << ins.sval << "\n";
+      else if (ins.op == "local!")
+        std::cout << "  -> " << ins.sval << "\n";
       else
         std::cout << "  [unknown: " << ins.op << " " << ins.ival << " "
                   << ins.sval << "]\n";
     }
   }
 
-  // -- token processor ----------------------------------------------------
+  // -- token processor -------------------------------------------------------
   void process(const std::vector<std::string> &tokens) {
     for (int i = 0; i < (int)tokens.size(); i++) {
       std::string t = lower(tokens[i]);
@@ -850,74 +879,75 @@ private:
         continue;
       }
 
+      // s" -- works in both modes
       if (t == "s\"") {
         auto [s, ni] = collect_string(tokens, i, '"');
         i = ni;
-        if (!heap[state_addr]) {
-          // Immediate mode: store in table and push index
+        if (!get_state()) {
           string_table.push_back(s);
           push((int)string_table.size() - 1);
         } else {
-          // Compile mode: emit the opcode that will push the index at runtim
-          emit(make("push-str", s));
+          emit_ins(make("push-str", s));
         }
         continue;
       }
 
-      // String literal
+      // ." and .(  -- works in both modes
       if (t == ".\"" || t == ".(") {
-        char delim = t[1];
-        if (delim == '(')
-          delim = ')'; // match parens
+        char delim = (t[1] == '(') ? ')' : '"';
         auto [s, ni] = collect_string(tokens, i, delim);
         i = ni;
-        if (!heap[state_addr])
+        if (!get_state())
           std::cout << s;
         else
-          emit(make("strlit", s));
+          emit_ins(make("strlit", s));
         continue;
       }
+
+      // char / [char]
       if (t == "char" || t == "[char]") {
         std::string tok = tokens[++i];
         int val = (int)(unsigned char)tok[0];
-        if (heap[state_addr])
-          emit(make("lit", val));
+        if (get_state())
+          emit_ins(make("lit", val));
         else
           push(val);
         continue;
       }
+
+      // postpone
       if (t == "postpone") {
         std::string name = lower(tokens[++i]);
         auto it = dict.find(name);
         if (it == dict.end())
           throw std::runtime_error("postpone: unknown word: " + name);
-
         if (it->second.is_immediate) {
-          // Immediate word: compile a direct call to it.
-          // When the enclosing word runs (at compile time of some outer word),
-          // this will execute the immediate word directly.
-          emit(make("call", name));
+          // Compile a call to the immediate word so it runs at the
+          // enclosing word's compile time.
+          emit_ins(make("call", name));
         } else {
-          // Non-immediate word: compile code that will compile a call to it.
-          // We need to emit: lit <xt-of-name>, compile,
-          // At runtime this pushes the xt and calls compile, which emits the
-          // call.
-          auto xtit = std::find(xt_table.begin(), xt_table.end(), name);
-          int index;
-          if (xtit == xt_table.end()) {
-            xt_table.push_back(name);
-            index = (int)xt_table.size() - 1;
-          } else {
-            index = (int)std::distance(xt_table.begin(), xtit);
-          }
-          emit(make("lit", index));
-          emit(make("call", "compile,"));
+          // Compile: lit <xt>, compile,
+          // At runtime this pushes the xt and calls compile, to emit the call.
+          emit_ins(make("lit", name_to_xt(name)));
+          emit_ins(make("call", "compile,"));
         }
         continue;
       }
+
+      // ' (tick) -- works in both modes
+      if (t == "'") {
+        std::string name = lower(tokens[++i]);
+        int id = name_to_xt(name); // throws if not found
+        if (get_state())
+          emit_ins(make("lit", id));
+        else
+          push(id);
+        continue;
+      }
+
+      // help -- works in both modes
       if (t == "help") {
-        if (i + 1 >= (int)tokens.size()) {
-          // bare "help" lists all words that have help entries
+        if (i + 1 >= (int)tokens.size() || tokens[i + 1] == ";") {
           std::vector<std::string> names;
           for (auto &kv : help_db)
             names.push_back(kv.first);
@@ -929,18 +959,17 @@ private:
         } else {
           std::string name = lower(tokens[++i]);
           auto it = help_db.find(name);
-          if (it != help_db.end()) {
+          if (it != help_db.end())
             std::cout << name << "\n" << it->second;
-          } else {
-            // Fallback: at least confirm whether the word exists
-            if (dict.count(name))
-              std::cout << name << ": no help entry (word exists)\n";
-            else
-              std::cout << name << ": unknown word\n";
-          }
+          else if (dict.count(name))
+            std::cout << name << ": no help entry (word exists)\n";
+          else
+            std::cout << name << ": unknown word\n";
         }
         continue;
       }
+
+      // see -- works in both modes
       if (t == "see") {
         std::string name = lower(tokens[++i]);
         auto it = dict.find(name);
@@ -951,7 +980,7 @@ private:
         Entry &e = it->second;
         switch (e.kind) {
         case Entry::PRIM:
-          std::cout << name << " is a primitive\n";
+          std::cout << name << " is a primitive (xt=" << e.id << ")\n";
           break;
         case Entry::WORD:
         case Entry::DEFINING:
@@ -965,52 +994,30 @@ private:
           break;
         case Entry::CREATE:
           std::cout << name << " is a created word, body addr=" << e.body_addr
-                    << "\n";
+                    << " (xt=" << e.id << ")\n";
           break;
         }
         continue;
       }
-      if (t == "'") {
-        std::string name = lower(tokens[++i]);
-        auto it = dict.find(name);
-        if (it == dict.end())
-          throw std::runtime_error("Unknown word: " + name);
-        auto xtit = std::find(xt_table.begin(), xt_table.end(), name);
-        int index;
-        if (xtit == xt_table.end()) {
-          xt_table.push_back(name);
-          index = (int)xt_table.size() - 1;
-        } else {
-          index = (int)std::distance(xt_table.begin(), xtit);
-        }
-        if (heap[state_addr]) {
-          // In compile mode, emit a lit so the xt lands on the stack at
-          // runtime
-          emit(make("lit", index));
-        } else {
-          push(index);
-        }
-        continue;
-      }
-      if (!heap[state_addr]) {
+
+      // -- interpret mode ----------------------------------------------------
+      if (!get_state()) {
+
         if (t == "include") {
-          std::string filename = tokens[++i];
-          load_file(filename);
+          load_file(tokens[++i]);
           continue;
         }
         if (t == "edit") {
-          std::string filename = tokens[++i];
-          edit_file(filename);
+          edit_file(tokens[++i]);
           continue;
         }
 
         if (t == "create") {
-          std::string new_name = lower(tokens[++i]); // Grab "sizes"
+          std::string new_name = lower(tokens[++i]);
           Entry ne;
           ne.kind = Entry::CREATE;
           ne.body_addr = (int)heap.size();
-          // No does_code yet; it just returns its address by default
-          dict[new_name] = ne;
+          register_entry(new_name, ne);
           continue;
         }
 
@@ -1019,24 +1026,20 @@ private:
           last_word = current;
           prog = {};
           does_pos = -1;
-          heap[state_addr] = 1;
+          set_state(1);
           continue;
         }
 
-        // Defining word invocation
+        // Defining word invocation (e.g. variable foo, constant bar)
         auto it = dict.find(t);
         if (it != dict.end() && it->second.kind == Entry::DEFINING) {
           std::string new_name = lower(tokens[++i]);
           int body_addr = (int)heap.size();
-
-          // Create the new child word entry
           Entry ne;
           ne.kind = Entry::CREATE;
           ne.body_addr = body_addr;
-          ne.does_code =
-              it->second.does_code; // Inherit the behavior after does>
-          dict[new_name] = ne;
-
+          ne.does_code = it->second.does_code;
+          register_entry(new_name, ne);
           run(it->second.code);
           continue;
         }
@@ -1045,14 +1048,13 @@ private:
         continue;
       }
 
-      // -- compile mode ----------------------------------------------
+      // -- compile mode ------------------------------------------------------
 
       if (t == ";") {
         if (!locals.empty())
-          emit(make("locals-exit"));
-        emit(make("exit"));
+          emit_ins(make("locals-exit"));
+        emit_ins(make("exit"));
         locals.clear();
-
         Entry e;
         if (does_pos >= 0) {
           e.kind = Entry::DEFINING;
@@ -1062,40 +1064,23 @@ private:
           e.kind = Entry::WORD;
           e.code = prog;
         }
-        dict[current] = e;
-        heap[state_addr] = 0;
+        register_entry(current, e);
+        set_state(0);
         does_pos = -1;
         continue;
       }
-      if (t == "exit") {
-        if (!locals.empty()) {
-          emit(make("locals-exit"));
-        }
-        emit(make("exit"));
-        continue;
-      }
+
       if (t == "does>") {
         does_pos = (int)prog.size();
         continue;
       }
 
       if (t == "create") {
-        // Inside a defining word, create is handled at invocation time
-        // by the DEFINING entry mechanism — nothing to emit
+        // Inside a defining word body: no-op at compile time;
+        // child creation is handled when the defining word is invoked.
         continue;
       }
-      if (t == "repeat") {
-        // Jump back to BEGIN, then patch the WHILE exit
-        int while_addr = cstack.back();
-        cstack.pop_back();
-        int begin_addr = cstack.back();
-        cstack.pop_back();
 
-        emit(make("branch", begin_addr)); // Loop back to start
-        prog[while_addr].ival =
-            (int)prog.size(); // Patch WHILE to jump here on failure
-        continue;
-      }
       if (t == "{") {
         std::vector<std::string> names;
         while (true) {
@@ -1103,7 +1088,6 @@ private:
           if (i >= (int)tokens.size() || tokens[i] == "}")
             break;
           if (tokens[i] == "--") {
-            // skip everything after -- including }
             while (i < (int)tokens.size() && tokens[i] != "}")
               i++;
             break;
@@ -1112,19 +1096,19 @@ private:
         }
         Ins ins = make("locals-enter", (int)names.size());
         ins.names = names;
-        emit(ins);
+        emit_ins(ins);
         for (int j = (int)names.size() - 1; j >= 0; j--)
-          emit(make("local!", j, names[j]));
+          emit_ins(make("local!", j, names[j]));
         locals = names;
         continue;
       }
 
-      // Local read
+      // Local variable read
       {
         auto lit = std::find(locals.begin(), locals.end(), t);
         if (lit != locals.end()) {
           int idx = (int)(lit - locals.begin());
-          emit(make("local@", idx, t));
+          emit_ins(make("local@", idx, t));
           continue;
         }
       }
@@ -1135,22 +1119,22 @@ private:
         if (lit == locals.end())
           throw std::runtime_error("Unknown local: " + lname);
         int idx = (int)(lit - locals.begin());
-        emit(make("local!", idx, lname));
+        emit_ins(make("local!", idx, lname));
         continue;
       }
 
       auto [ok, n] = try_parse(t);
       if (ok) {
-        emit(make("lit", n));
+        emit_ins(make("lit", n));
         continue;
       }
+
       auto it = dict.find(t);
       if (it != dict.end()) {
-        if (it->second.is_immediate) {
-          run_word(t); // Run it NOW even though we are compiling
-        } else {
-          emit(make("call", t)); // Standard behavior: compile for later
-        }
+        if (it->second.is_immediate)
+          run_word(t);
+        else
+          emit_ins(make("call", t));
         continue;
       }
       throw std::runtime_error("Unknown word: " + t);
@@ -1158,30 +1142,26 @@ private:
   }
 };
 
-// -- REPL
-// ----------------------------------------------------------------------
+// -- REPL -------------------------------------------------------------------
 void Forth::repl(int argc, char *argv[]) {
   init_prims();
-  std::string dir = DIR; // Access the preprocessor macro as a string
+  std::string dir = DIR;
   load_file(trim(dir) + "/stdlib.fs");
   load_help(trim(dir) + "/help.txt");
   if (argc > 1)
     load_file(argv[1]);
   std::cout << "BadgerForth 1.0\n";
+
   while (true) {
 #ifdef USE_READLINE
-    // readline() provides the prompt and returns a malloc'd char*
     char *input = readline("> ");
     if (!input)
-      break; // Handle EOF (Ctrl+D)
-
+      break;
     std::string line(input);
-    if (!line.empty()) {
+    if (!line.empty())
       add_history(input);
-    }
-    free(input); // Readline requires manual memory management
+    free(input);
 #else
-    // Fallback to standard C++ I/O
     std::cout << "> " << std::flush;
     std::string line;
     if (!std::getline(std::cin, line))
@@ -1195,6 +1175,7 @@ void Forth::repl(int argc, char *argv[]) {
     try {
       auto tokens = split(line);
       bool wrap = true;
+
       if (!tokens.empty()) {
         std::string first = lower(tokens[0]);
         if (first == ":" || first == "include" || first == "edit" ||
@@ -1202,15 +1183,15 @@ void Forth::repl(int argc, char *argv[]) {
           wrap = false;
         }
         auto it = dict.find(first);
-        if (it != dict.end() && it->second.kind == Entry::DEFINING) {
+        if (it != dict.end() && it->second.kind == Entry::DEFINING)
           wrap = false;
-        }
       }
 
-      // Scan all tokens for create
+      // If any token is "create" or ":", don't wrap
       if (wrap) {
         for (auto &tok : tokens) {
-          if (lower(tok) == "create") {
+          std::string lt = lower(tok);
+          if (lt == "create" || lt == ":") {
             wrap = false;
             break;
           }
@@ -1219,20 +1200,18 @@ void Forth::repl(int argc, char *argv[]) {
 
       if (wrap) {
         process(split(": __anon__ " + line + " ; __anon__"));
-        dict.erase("__anon__");
       } else {
         process(tokens);
       }
       std::cout << " ok\n";
     } catch (std::exception &e) {
       std::cout << "Error: " << e.what() << "\n";
-      // ... reset state logic ...
       stack.clear();
       rstack.clear();
       lframes.clear();
       cstack.clear();
       prog.clear();
-      heap[state_addr] = 0;
+      set_state(0);
       does_pos = -1;
     }
     dict.erase("__anon__");
