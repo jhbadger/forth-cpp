@@ -970,32 +970,32 @@ private:
         }
         continue;
       }
+      if (t == "'") {
+        std::string name = lower(tokens[++i]);
+        auto it = dict.find(name);
+        if (it == dict.end())
+          throw std::runtime_error("Unknown word: " + name);
+        auto xtit = std::find(xt_table.begin(), xt_table.end(), name);
+        int index;
+        if (xtit == xt_table.end()) {
+          xt_table.push_back(name);
+          index = (int)xt_table.size() - 1;
+        } else {
+          index = (int)std::distance(xt_table.begin(), xtit);
+        }
+        if (heap[state_addr]) {
+          // In compile mode, emit a lit so the xt lands on the stack at
+          // runtime
+          emit(make("lit", index));
+        } else {
+          push(index);
+        }
+        continue;
+      }
       if (!heap[state_addr]) {
         if (t == "include") {
           std::string filename = tokens[++i];
           load_file(filename);
-          continue;
-        }
-        if (t == "'") {
-          std::string name = lower(tokens[++i]);
-          auto it = dict.find(name);
-          if (it == dict.end())
-            throw std::runtime_error("Unknown word: " + name);
-          auto xtit = std::find(xt_table.begin(), xt_table.end(), name);
-          int index;
-          if (xtit == xt_table.end()) {
-            xt_table.push_back(name);
-            index = (int)xt_table.size() - 1;
-          } else {
-            index = (int)std::distance(xt_table.begin(), xtit);
-          }
-          if (heap[state_addr]) {
-            // In compile mode, emit a lit so the xt lands on the stack at
-            // runtime
-            emit(make("lit", index));
-          } else {
-            push(index);
-          }
           continue;
         }
         if (t == "edit") {
