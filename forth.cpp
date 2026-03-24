@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -19,31 +21,50 @@
 #endif
 
 // - Instruction --------------------------------------------------------------
-struct Ins {
-  std::string op;
-  int ival = 0;
-  std::string sval;
-  std::vector<std::string> names; // for locals-enter
+enum class Op {
+  Lit,         // push ival
+  StrLit,      // print sval
+  Call,        // call word named sval (used only during see/debug; resolved at
+               // compile)
+  CallDirect,  // call entry at entries[ival] — no string lookup
+  Branch,      // unconditional jump to ival
+  ZBranch,     // jump to ival if top == 0
+  Exit,        // return from word
+  PushStr,     // push string sval onto string_table, push index
+  LocalGet,    // push local[ival]
+  LocalSet,    // pop into local[ival]
+  LocalsEnter, // push new locals frame of size ival (names in names)
+  LocalsExit,  // pop locals frame
+  Do,          // begin counted loop
+  Loop,        // increment index, branch back to ival if < limit
+  PlusLoop,    // step index by TOS, branch back to ival if not past limit
 };
 
-static Ins make(std::string op) {
+struct Ins {
+  Op op;
+  int ival = 0;
+  std::string sval; // for Call (word name), StrLit/PushStr, LocalGet/Set
+  std::vector<std::string> names; // for LocalsEnter
+};
+
+static Ins make(Op op) {
   Ins i;
   i.op = op;
   return i;
 }
-static Ins make(std::string op, int v) {
+static Ins make(Op op, int v) {
   Ins i;
   i.op = op;
   i.ival = v;
   return i;
 }
-static Ins make(std::string op, std::string s) {
+static Ins make(Op op, std::string s) {
   Ins i;
   i.op = op;
   i.sval = s;
   return i;
 }
-static Ins make(std::string op, int v, std::string s) {
+static Ins make(Op op, int v, std::string s) {
   Ins i;
   i.op = op;
   i.ival = v;
@@ -54,12 +75,13 @@ static Ins make(std::string op, int v, std::string s) {
 // -- Dict entry ---------------------------------------------------------------
 struct Entry {
   enum Kind { PRIM, WORD, DEFINING, CREATE } kind;
+  std::string name; // own name, for diagnostics and compile,
   std::function<void()> prim;
-  std::vector<Ins> code;      // init code (WORD/DEFINING)
-  std::vector<Ins> does_code; // DEFINING does> / CREATE body
-  int body_addr = 0;          // CREATE
+  std::vector<Ins> code;
+  std::vector<Ins> does_code;
+  int body_addr = 0;
   bool is_immediate = false;
-  int id = -1; // stable execution token (assigned at creation)
+  int id = -1;
 };
 
 // -- Forth interpreter --------------------------------------------------------
@@ -88,12 +110,15 @@ private:
   std::vector<std::string> locals;
   std::vector<std::vector<int>> leave_stack;
 
-  std::unordered_map<std::string, Entry> dict;
-
-  // xt system: each Entry gets a unique integer id at creation.
-  // id_to_name lets execute/compile, go from id back to the dict key.
+  // -- dictionary ------------------------------------------------------------
+  // entries is the stable store — deque never moves elements on push_back,
+  // so indices into it remain valid forever.
+  // dict maps name -> index into entries.
+  // id_to_idx maps xt id -> index into entries (for execute/compile,).
+  std::deque<Entry> entries;
+  std::unordered_map<std::string, int> dict; // name -> entries index
+  std::unordered_map<int, int> id_to_idx;    // xt id -> entries index
   int next_id = 0;
-  std::unordered_map<int, std::string> id_to_name;
 
   std::vector<std::string> string_table;
   std::string last_word;
@@ -156,34 +181,77 @@ private:
   void emit_ins(Ins ins) { prog.push_back(ins); }
 
   // -- dict helpers ----------------------------------------------------------
-  // Register a new entry and assign it a stable xt id.
-  void register_entry(const std::string &name, Entry e) {
+  // Register (or re-register) an entry, giving it a stable index and xt id.
+  // Returns the entries index.
+  int register_entry(const std::string &name, Entry e) {
     e.id = next_id++;
-    id_to_name[e.id] = name;
-    dict[name] = std::move(e);
+    e.name = name;
+    auto it = dict.find(name);
+    if (it != dict.end()) {
+      int idx = it->second;
+      id_to_idx[e.id] = idx;
+      entries[idx] = std::move(e);
+      return idx;
+    }
+    int idx = (int)entries.size();
+    entries.push_back(std::move(e));
+    dict[name] = idx;
+    id_to_idx[entries[idx].id] = idx;
+    return idx;
   }
 
-  // Look up name by xt id.
-  const std::string &xt_to_name(int id) const {
-    auto it = id_to_name.find(id);
-    if (it == id_to_name.end())
+  // Look up Entry by xt id.
+  Entry &xt_to_entry(int id) {
+    auto it = id_to_idx.find(id);
+    if (it == id_to_idx.end())
       throw std::runtime_error("execute: invalid execution token " +
                                std::to_string(id));
+    return entries[it->second];
+  }
+
+  // Get entries index for a named word, or throw.
+  int name_to_idx(const std::string &name) const {
+    auto it = dict.find(name);
+    if (it == dict.end())
+      throw std::runtime_error("Unknown word: " + name);
     return it->second;
   }
 
-  // Get the xt (id) for a named word, registering it if needed.
-  // (Entries created before the xt system was in place — e.g. via
-  //  direct dict[] assignment — might have id == -1; this fixes them up.)
+  // Get xt id for a named word (for ' and postpone).
   int name_to_xt(const std::string &name) {
+    int idx = name_to_idx(name);
+    return entries[idx].id;
+  }
+
+  // Find entry by name, or nullptr.
+  Entry *find(const std::string &name) {
     auto it = dict.find(name);
     if (it == dict.end())
-      throw std::runtime_error("name_to_xt: unknown word: " + name);
-    if (it->second.id == -1) {
-      it->second.id = next_id++;
-      id_to_name[it->second.id] = name;
+      return nullptr;
+    return &entries[it->second];
+  }
+  const Entry *find(const std::string &name) const {
+    auto it = dict.find(name);
+    if (it == dict.end())
+      return nullptr;
+    return &entries[it->second];
+  }
+
+  // Resolve all Op::Call instructions in a code vector to Op::CallDirect
+  // where the named word now exists. Called at ; time after the word is fully
+  // compiled. Any Op::Call that still can't be resolved is left as-is
+  // (genuine forward reference — will resolve at runtime via run_word).
+  void resolve_calls(std::vector<Ins> &code) {
+    for (auto &ins : code) {
+      if (ins.op == Op::Call && !ins.sval.empty()) {
+        auto it = dict.find(ins.sval);
+        if (it != dict.end()) {
+          ins.op = Op::CallDirect;
+          ins.ival = it->second;
+          // sval kept for diagnostics
+        }
+      }
     }
-    return it->second.id;
   }
 
   // -- number helpers --------------------------------------------------------
@@ -311,46 +379,64 @@ private:
   void run(const std::vector<Ins> &code) {
     for (int pc = 0; pc < (int)code.size(); pc++) {
       const Ins &ins = code[pc];
-      if (ins.op == "lit") {
+      switch (ins.op) {
+      case Op::Lit:
         push(ins.ival);
-      } else if (ins.op == "strlit") {
+        break;
+      case Op::StrLit:
         std::cout << ins.sval;
-      } else if (ins.op == "call") {
+        break;
+      case Op::Call:
+        // Fallback string-dispatch (should rarely appear after compilation)
         run_word(ins.sval);
-      } else if (ins.op == "branch") {
+        break;
+      case Op::CallDirect:
+        run_entry(entries[ins.ival]);
+        break;
+      case Op::Branch:
         pc = ins.ival - 1;
-      } else if (ins.op == "0branch") {
+        break;
+      case Op::ZBranch:
         if (pop() == 0)
           pc = ins.ival - 1;
-      } else if (ins.op == "exit") {
+        break;
+      case Op::Exit:
         return;
-      } else if (ins.op == "push-str") {
+      case Op::PushStr:
         string_table.push_back(ins.sval);
         push((int)string_table.size() - 1);
-      } else if (ins.op == "local@") {
+        break;
+      case Op::LocalGet:
         push(lframes.back()[ins.ival]);
-      } else if (ins.op == "local!") {
+        break;
+      case Op::LocalSet:
         lframes.back()[ins.ival] = pop();
-      } else if (ins.op == "locals-enter") {
+        break;
+      case Op::LocalsEnter:
         lframes.push_back(std::vector<int>(ins.ival, 0));
-      } else if (ins.op == "locals-exit") {
+        break;
+      case Op::LocalsExit:
         lframes.pop_back();
-      } else if (ins.op == "(do)") {
+        break;
+      case Op::Do: {
         int start = pop(), limit = pop();
         rpush(limit);
         rpush(start);
-      } else if (ins.op == "(loop)") {
+        break;
+      }
+      case Op::Loop: {
         int idx = rstack.back();
         rstack.pop_back();
         int limit = rstack.back();
-        idx++;
-        if (idx < limit) {
+        if (++idx < limit) {
           rpush(idx);
           pc = ins.ival - 1;
         } else {
           rstack.pop_back();
         }
-      } else if (ins.op == "(+loop)") {
+        break;
+      }
+      case Op::PlusLoop: {
         int step = pop();
         int idx = rstack.back();
         rstack.pop_back();
@@ -363,7 +449,27 @@ private:
         } else {
           rstack.pop_back();
         }
+        break;
       }
+      }
+    }
+  }
+
+  void run_entry(Entry &e) {
+    switch (e.kind) {
+    case Entry::PRIM:
+      e.prim();
+      break;
+    case Entry::WORD:
+      run(e.code);
+      break;
+    case Entry::CREATE:
+      push(e.body_addr);
+      if (!e.does_code.empty())
+        run(e.does_code);
+      break;
+    case Entry::DEFINING:
+      break; // only invoked via process()
     }
   }
 
@@ -371,22 +477,7 @@ private:
     std::string w = lower(raw);
     auto it = dict.find(w);
     if (it != dict.end()) {
-      Entry &e = it->second;
-      switch (e.kind) {
-      case Entry::PRIM:
-        e.prim();
-        break;
-      case Entry::WORD:
-        run(e.code);
-        break;
-      case Entry::CREATE:
-        push(e.body_addr);
-        if (!e.does_code.empty())
-          run(e.does_code);
-        break;
-      case Entry::DEFINING:
-        break; // only invoked via process()
-      }
+      run_entry(entries[it->second]);
       return;
     }
     auto [ok, n] = try_parse(w);
@@ -407,7 +498,7 @@ private:
       register_entry(name, e);
     };
     auto make_immediate = [&](const std::string &name) {
-      dict[name].is_immediate = true;
+      find(name)->is_immediate = true;
     };
 
     // Arithmetic
@@ -571,13 +662,13 @@ private:
 
     // Control flow (immediate)
     prim("if", [&] {
-      emit_ins(make("0branch", 0));
+      emit_ins(make(Op::ZBranch, 0));
       cstack.push_back((int)prog.size() - 1);
     });
     make_immediate("if");
 
     prim("else", [&] {
-      emit_ins(make("branch", 0));
+      emit_ins(make(Op::Branch, 0));
       int prev = cstack.back();
       cstack.pop_back();
       prog[prev].ival = (int)prog.size();
@@ -598,19 +689,19 @@ private:
     prim("until", [&] {
       int target = cstack.back();
       cstack.pop_back();
-      emit_ins(make("0branch", target));
+      emit_ins(make(Op::ZBranch, target));
     });
     make_immediate("until");
 
     prim("again", [&] {
       int target = cstack.back();
       cstack.pop_back();
-      emit_ins(make("branch", target));
+      emit_ins(make(Op::Branch, target));
     });
     make_immediate("again");
 
     prim("while", [&] {
-      emit_ins(make("0branch", 0));
+      emit_ins(make(Op::ZBranch, 0));
       cstack.push_back((int)prog.size() - 1);
     });
     make_immediate("while");
@@ -620,13 +711,13 @@ private:
       cstack.pop_back();
       int begin_addr = cstack.back();
       cstack.pop_back();
-      emit_ins(make("branch", begin_addr));
+      emit_ins(make(Op::Branch, begin_addr));
       prog[while_addr].ival = (int)prog.size();
     });
     make_immediate("repeat");
 
     prim("do", [&] {
-      emit_ins(make("(do)"));
+      emit_ins(make(Op::Do));
       cstack.push_back((int)prog.size());
       leave_stack.push_back({});
     });
@@ -635,7 +726,7 @@ private:
     prim("loop", [&] {
       int addr = cstack.back();
       cstack.pop_back();
-      emit_ins(make("(loop)", addr));
+      emit_ins(make(Op::Loop, addr));
       int exit_addr = (int)prog.size();
       for (int p : leave_stack.back())
         prog[p].ival = exit_addr;
@@ -646,7 +737,7 @@ private:
     prim("+loop", [&] {
       int addr = cstack.back();
       cstack.pop_back();
-      emit_ins(make("(+loop)", addr));
+      emit_ins(make(Op::PlusLoop, addr));
       int exit_addr = (int)prog.size();
       for (int p : leave_stack.back())
         prog[p].ival = exit_addr;
@@ -657,7 +748,7 @@ private:
     prim("leave", [&] {
       if (leave_stack.empty())
         throw std::runtime_error("leave outside do-loop");
-      emit_ins(make("branch", 0));
+      emit_ins(make(Op::Branch, 0));
       leave_stack.back().push_back((int)prog.size() - 1);
     });
     make_immediate("leave");
@@ -675,12 +766,14 @@ private:
       rstack.pop_back();
     });
 
-    prim("recurse", [&] { emit_ins(make("call", current)); });
+    // recurse must use Op::Call with the name, not CallDirect, because
+    // the word being defined isn't in the dict yet at compile time.
+    prim("recurse", [&] { emit_ins(make(Op::Call, current)); });
     make_immediate("recurse");
     prim("exit", [&] {
       if (!locals.empty())
-        emit_ins(make("locals-exit"));
-      emit_ins(make("exit"));
+        emit_ins(make(Op::LocalsExit));
+      emit_ins(make(Op::Exit));
     });
     make_immediate("exit");
 
@@ -770,20 +863,25 @@ private:
     // execute and compile, use the xt id directly.
     prim("state", [&] { push(state_addr); });
     prim("immediate", [&] {
-      if (!last_word.empty())
-        dict[last_word].is_immediate = true;
+      if (!last_word.empty()) {
+        Entry *e = find(last_word);
+        if (e)
+          e->is_immediate = true;
+      }
     });
 
     // execute ( xt -- ) : run the word whose id is on the stack
     prim("execute", [&] {
       int id = pop();
-      run_word(xt_to_name(id));
+      run_entry(xt_to_entry(id));
     });
 
     // compile, ( xt -- ) : compile a call to the word whose id is on the stack
     prim("compile,", [&] {
       int id = pop();
-      emit_ins(make("call", xt_to_name(id)));
+      Entry &e = xt_to_entry(id);
+      int idx = id_to_idx[id];
+      emit_ins(make(Op::CallDirect, idx, e.name));
     });
 
     // Misc
@@ -826,39 +924,55 @@ private:
   // -- SEE decompiler --------------------------------------------------------
   void see_code(const std::vector<Ins> &code) {
     for (auto &ins : code) {
-      if (ins.op == "lit")
+      switch (ins.op) {
+      case Op::Lit:
         std::cout << "  lit " << ins.ival << "\n";
-      else if (ins.op == "strlit")
+        break;
+      case Op::StrLit:
         std::cout << "  .\" " << ins.sval << "\"\n";
-      else if (ins.op == "call")
+        break;
+      case Op::Call:
         std::cout << "  " << ins.sval << "\n";
-      else if (ins.op == "branch")
+        break;
+      case Op::CallDirect:
+        std::cout << "  " << ins.sval << "\n";
+        break;
+      case Op::Branch:
         std::cout << "  branch -> " << ins.ival << "\n";
-      else if (ins.op == "0branch")
+        break;
+      case Op::ZBranch:
         std::cout << "  0branch -> " << ins.ival << "\n";
-      else if (ins.op == "push-str")
-        std::cout << "  s\" " << ins.sval << "\"\n";
-      else if (ins.op == "(do)")
-        std::cout << "  do\n";
-      else if (ins.op == "(loop)")
-        std::cout << "  loop -> " << ins.ival << "\n";
-      else if (ins.op == "(+loop)")
-        std::cout << "  +loop -> " << ins.ival << "\n";
-      else if (ins.op == "exit")
+        break;
+      case Op::Exit:
         std::cout << "  exit\n";
-      else if (ins.op == "locals-enter") {
+        break;
+      case Op::PushStr:
+        std::cout << "  s\" " << ins.sval << "\"\n";
+        break;
+      case Op::LocalGet:
+        std::cout << "  " << ins.sval << "\n";
+        break;
+      case Op::LocalSet:
+        std::cout << "  -> " << ins.sval << "\n";
+        break;
+      case Op::LocalsEnter:
         std::cout << "  { ";
         for (auto &n : ins.names)
           std::cout << n << " ";
         std::cout << "-- }\n";
-      } else if (ins.op == "locals-exit") { /* nothing */
-      } else if (ins.op == "local@")
-        std::cout << "  " << ins.sval << "\n";
-      else if (ins.op == "local!")
-        std::cout << "  -> " << ins.sval << "\n";
-      else
-        std::cout << "  [unknown: " << ins.op << " " << ins.ival << " "
-                  << ins.sval << "]\n";
+        break;
+      case Op::LocalsExit:
+        break;
+      case Op::Do:
+        std::cout << "  do\n";
+        break;
+      case Op::Loop:
+        std::cout << "  loop -> " << ins.ival << "\n";
+        break;
+      case Op::PlusLoop:
+        std::cout << "  +loop -> " << ins.ival << "\n";
+        break;
+      }
     }
   }
 
@@ -887,7 +1001,7 @@ private:
           string_table.push_back(s);
           push((int)string_table.size() - 1);
         } else {
-          emit_ins(make("push-str", s));
+          emit_ins(make(Op::PushStr, s));
         }
         continue;
       }
@@ -900,7 +1014,7 @@ private:
         if (!get_state())
           std::cout << s;
         else
-          emit_ins(make("strlit", s));
+          emit_ins(make(Op::StrLit, s));
         continue;
       }
 
@@ -909,7 +1023,7 @@ private:
         std::string tok = tokens[++i];
         int val = (int)(unsigned char)tok[0];
         if (get_state())
-          emit_ins(make("lit", val));
+          emit_ins(make(Op::Lit, val));
         else
           push(val);
         continue;
@@ -918,18 +1032,14 @@ private:
       // postpone
       if (t == "postpone") {
         std::string name = lower(tokens[++i]);
-        auto it = dict.find(name);
-        if (it == dict.end())
+        Entry *e = find(name);
+        if (!e)
           throw std::runtime_error("postpone: unknown word: " + name);
-        if (it->second.is_immediate) {
-          // Compile a call to the immediate word so it runs at the
-          // enclosing word's compile time.
-          emit_ins(make("call", name));
+        if (e->is_immediate) {
+          emit_ins(make(Op::Call, name));
         } else {
-          // Compile: lit <xt>, compile,
-          // At runtime this pushes the xt and calls compile, to emit the call.
-          emit_ins(make("lit", name_to_xt(name)));
-          emit_ins(make("call", "compile,"));
+          emit_ins(make(Op::Lit, name_to_xt(name)));
+          emit_ins(make(Op::Call, "compile,"));
         }
         continue;
       }
@@ -937,9 +1047,9 @@ private:
       // ' (tick) -- works in both modes
       if (t == "'") {
         std::string name = lower(tokens[++i]);
-        int id = name_to_xt(name); // throws if not found
+        int id = name_to_xt(name);
         if (get_state())
-          emit_ins(make("lit", id));
+          emit_ins(make(Op::Lit, id));
         else
           push(id);
         continue;
@@ -961,7 +1071,7 @@ private:
           auto it = help_db.find(name);
           if (it != help_db.end())
             std::cout << name << "\n" << it->second;
-          else if (dict.count(name))
+          else if (find(name))
             std::cout << name << ": no help entry (word exists)\n";
           else
             std::cout << name << ": unknown word\n";
@@ -972,29 +1082,28 @@ private:
       // see -- works in both modes
       if (t == "see") {
         std::string name = lower(tokens[++i]);
-        auto it = dict.find(name);
-        if (it == dict.end()) {
+        Entry *e = find(name);
+        if (!e) {
           std::cout << "Unknown word: " << name << "\n";
           continue;
         }
-        Entry &e = it->second;
-        switch (e.kind) {
+        switch (e->kind) {
         case Entry::PRIM:
-          std::cout << name << " is a primitive (xt=" << e.id << ")\n";
+          std::cout << name << " is a primitive (xt=" << e->id << ")\n";
           break;
         case Entry::WORD:
         case Entry::DEFINING:
           std::cout << ": " << name << "\n";
-          see_code(e.code);
-          if (e.kind == Entry::DEFINING) {
+          see_code(e->code);
+          if (e->kind == Entry::DEFINING) {
             std::cout << "does>\n";
-            see_code(e.does_code);
+            see_code(e->does_code);
           }
           std::cout << ";\n";
           break;
         case Entry::CREATE:
-          std::cout << name << " is a created word, body addr=" << e.body_addr
-                    << " (xt=" << e.id << ")\n";
+          std::cout << name << " is a created word, body addr=" << e->body_addr
+                    << " (xt=" << e->id << ")\n";
           break;
         }
         continue;
@@ -1031,17 +1140,19 @@ private:
         }
 
         // Defining word invocation (e.g. variable foo, constant bar)
-        auto it = dict.find(t);
-        if (it != dict.end() && it->second.kind == Entry::DEFINING) {
-          std::string new_name = lower(tokens[++i]);
-          int body_addr = (int)heap.size();
-          Entry ne;
-          ne.kind = Entry::CREATE;
-          ne.body_addr = body_addr;
-          ne.does_code = it->second.does_code;
-          register_entry(new_name, ne);
-          run(it->second.code);
-          continue;
+        {
+          auto it = dict.find(t);
+          if (it != dict.end() && entries[it->second].kind == Entry::DEFINING) {
+            Entry &de = entries[it->second];
+            std::string new_name = lower(tokens[++i]);
+            Entry ne;
+            ne.kind = Entry::CREATE;
+            ne.body_addr = (int)heap.size();
+            ne.does_code = de.does_code;
+            register_entry(new_name, ne);
+            run(de.code);
+            continue;
+          }
         }
 
         run_word(t);
@@ -1052,8 +1163,8 @@ private:
 
       if (t == ";") {
         if (!locals.empty())
-          emit_ins(make("locals-exit"));
-        emit_ins(make("exit"));
+          emit_ins(make(Op::LocalsExit));
+        emit_ins(make(Op::Exit));
         locals.clear();
         Entry e;
         if (does_pos >= 0) {
@@ -1064,7 +1175,11 @@ private:
           e.kind = Entry::WORD;
           e.code = prog;
         }
-        register_entry(current, e);
+        // Register first so self-calls resolve correctly
+        int idx = register_entry(current, e);
+        // Now resolve all Op::Call -> Op::CallDirect in the stored code
+        resolve_calls(entries[idx].code);
+        resolve_calls(entries[idx].does_code);
         set_state(0);
         does_pos = -1;
         continue;
@@ -1094,11 +1209,11 @@ private:
           }
           names.push_back(tokens[i]);
         }
-        Ins ins = make("locals-enter", (int)names.size());
+        Ins ins = make(Op::LocalsEnter, (int)names.size());
         ins.names = names;
         emit_ins(ins);
         for (int j = (int)names.size() - 1; j >= 0; j--)
-          emit_ins(make("local!", j, names[j]));
+          emit_ins(make(Op::LocalSet, j, names[j]));
         locals = names;
         continue;
       }
@@ -1108,7 +1223,7 @@ private:
         auto lit = std::find(locals.begin(), locals.end(), t);
         if (lit != locals.end()) {
           int idx = (int)(lit - locals.begin());
-          emit_ins(make("local@", idx, t));
+          emit_ins(make(Op::LocalGet, idx, t));
           continue;
         }
       }
@@ -1119,22 +1234,30 @@ private:
         if (lit == locals.end())
           throw std::runtime_error("Unknown local: " + lname);
         int idx = (int)(lit - locals.begin());
-        emit_ins(make("local!", idx, lname));
+        emit_ins(make(Op::LocalSet, idx, lname));
         continue;
       }
 
       auto [ok, n] = try_parse(t);
       if (ok) {
-        emit_ins(make("lit", n));
+        emit_ins(make(Op::Lit, n));
         continue;
       }
 
-      auto it = dict.find(t);
-      if (it != dict.end()) {
-        if (it->second.is_immediate)
-          run_word(t);
-        else
-          emit_ins(make("call", t));
+      {
+        auto it = dict.find(t);
+        if (it != dict.end()) {
+          Entry &e = entries[it->second];
+          if (e.is_immediate)
+            run_entry(e);
+          else
+            emit_ins(make(Op::Call, t)); // resolved at ; time
+          continue;
+        }
+      }
+      // Allow self-reference: word isn't in dict yet until ; completes
+      if (t == current) {
+        emit_ins(make(Op::Call, t));
         continue;
       }
       throw std::runtime_error("Unknown word: " + t);
@@ -1182,16 +1305,21 @@ void Forth::repl(int argc, char *argv[]) {
             first == "bye" || first == "help" || first == "see") {
           wrap = false;
         }
-        auto it = dict.find(first);
-        if (it != dict.end() && it->second.kind == Entry::DEFINING)
+        Entry *e = find(first);
+        if (e && e->kind == Entry::DEFINING)
           wrap = false;
       }
 
-      // If any token is "create" or ":", don't wrap
+      // If any token is "create", ":", or a DEFINING word, don't wrap
       if (wrap) {
         for (auto &tok : tokens) {
           std::string lt = lower(tok);
           if (lt == "create" || lt == ":") {
+            wrap = false;
+            break;
+          }
+          Entry *e = find(lt);
+          if (e && e->kind == Entry::DEFINING) {
             wrap = false;
             break;
           }
@@ -1214,6 +1342,7 @@ void Forth::repl(int argc, char *argv[]) {
       set_state(0);
       does_pos = -1;
     }
+    // Remove __anon__ name from dict (entry slot stays but becomes unreachable)
     dict.erase("__anon__");
   }
 }
