@@ -9,7 +9,7 @@
 : array    create cells allot does> ;
 : arr@     ( idx arr-addr -- elem-addr )  swap cells + ;
 
-: print-array ( addr len -- )
+: print-array
   0 do
     dup i cells +
     @ .
@@ -77,11 +77,11 @@ s" ( addr len -- ) prints content of array starting from addr" help-set
 
 \ -- Double-cell memory -----------------------------------------------
 \ 2! ( lo hi addr -- )  stores lo at addr, hi at addr+cell
-: 2!  ( lo hi addr -- )
+: 2!
   dup >r cell+ !  r> ! ;
 
 \ 2@ ( addr -- lo hi )  fetches lo from addr, hi from addr+cell
-: 2@  ( addr -- lo hi )
+: 2@
   dup @  swap cell+ @ ;
 
 \ -- Double-cell return stack -----------------------------------------
@@ -351,3 +351,147 @@ s" r@"
 s" ( -- n )
 Copies the top of the return stack to the data stack without removing it."
 help-set
+
+\ -- Value, To, Defer, Is ---------------------------------------------------
+
+\ value: like a variable but reads directly (no @)
+\   42 value answer    => answer pushes 42
+\   100 to answer      => answer now pushes 100
+: value  create , does> @ ;
+: to     ' >body ! ;
+
+\ defer: a word whose behaviour can be changed at runtime with IS
+\   defer greet
+\   : say-hi ." hi" cr ;
+\   ' say-hi is greet
+\   greet  => prints "hi"
+: noop ;
+: defer  create ['] noop , does> @ execute ;
+
+\ Aliases
+: 1+  1 + ;
+: 1-  1 - ;
+: 2*  2 * ;
+: 2/  2 / ;
+: not  0= ;
+
+\ -- String utilities -------------------------------------------------------
+
+\ char+ and chars are already primitives (addr+1 and identity)
+\ These Forth aliases cover common usage patterns
+: +chars  chars + ;   \ ( addr n -- addr' ) advance by n chars
+
+
+\ -- Case statement --------------------------------------------------------
+\ case pushes 0 as a sentinel count on cstack.
+\ of compiles: over = if drop  (saving the branch address for endcase)
+\ endof compiles: branch-to-endcase then  (patches the 'if' from 'of')
+\ endcase: drops n, patches all endof branches to here.
+\
+\ We implement using postpone and the control stack.
+\ cstack layout after case: [ 0 ]  (sentinel)
+\ after each of:   [ 0 end-branch-addr ... ]
+\ endcase patches all end-branch addrs then drops.
+
+: case   0 ; immediate  \ push 0 sentinel
+
+: of
+  1+                        \ increment OF counter under sentinel
+  postpone over
+  postpone =
+  postpone if
+  postpone drop
+; immediate
+
+: endof
+  postpone else
+; immediate
+
+: endcase
+  postpone drop
+  \ n = number of OFs; call 'then' once for each to patch endof branches
+  begin dup while 1- postpone then repeat drop
+; immediate
+
+\ -- ?do (skip loop if limit=index) ----------------------------------------
+\ Standard DO always enters; ?DO skips if limit=index.
+\ We implement by emitting a ZBranch before the Do.
+\ ?do is implemented as a C++ primitive
+
+\ -- Marker / forget --------------------------------------------------------
+\ marker: saves the current dictionary position.
+\ When the created word is executed, it forgets itself and everything after it.
+\
+\ Implementation: stores dict-size and heap-size in variables,
+\ creates a word that restores them.
+\
+\ Note: this is a simplified version - it truncates the heap and dict but
+\ cannot un-execute side effects (I/O, external state, etc).
+
+\ marker is implemented as a C++ parsing word
+
+\ throw-str helper used by abort-quote
+\ ( str-idx -- ) throw using string at str-idx
+: throw-str   -1 throw ;
+
+\ -- Double-cell arithmetic ------------------------------------------------
+
+: d+
+  { lo1 hi1 lo2 hi2 -- }
+  lo1 lo2 +
+  dup lo1 < if  hi1 hi2 + 1+  else  hi1 hi2 +  then ;
+
+: d-
+  { lo1 hi1 lo2 hi2 -- }
+  lo1 lo2 - dup lo1 > if  hi1 hi2 - 1-  else  hi1 hi2 -  then ;
+
+: dnegate
+  invert swap invert swap
+  1 0 d+ ;
+
+: dabs
+  dup 0< if dnegate then ;
+
+: d=
+  { lo1 hi1 lo2 hi2 -- }  lo1 lo2 = hi1 hi2 = and ;
+
+: d<
+  { lo1 hi1 lo2 hi2 -- }
+  hi1 hi2 < if -1 exit then
+  hi1 hi2 > if  0 exit then
+  lo1 lo2 u< ;
+
+: du<
+  { lo1 hi1 lo2 hi2 -- }
+  hi1 hi2 u< if -1 exit then
+  hi1 hi2 > if  0 exit then
+  lo1 lo2 u< ;
+
+: dmax
+  2over 2over d< if 2swap then 2drop ;
+
+: dmin
+  2over 2over d< if      then 2drop ;
+
+: d2*
+  2* over  0< if 1+ then swap 2* swap ;
+
+: d2/
+  dup 1 and if [ 1 30 lshift 2* ] literal else 0 then
+  swap 2/ swap rot or swap ;
+
+: m+
+  s>d d+ ;
+
+\ -- Bounds and within (already primitives, these are aliases) -------------
+
+\ -- Additional output words -----------------------------------------------
+: u.   ( u -- )  0 u.r space ;   \ already a prim but alias for clarity
+
+\ -- String words ----------------------------------------------------------
+: bl   32 ;   \ already prim but define as word too for compatibility
+
+\ -- Misc ANS words --------------------------------------------------------
+: tuck    ( a b -- b a b )  swap over ;
+: nip     ( a b -- b )  swap drop ;
+

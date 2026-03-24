@@ -57,6 +57,7 @@ enum class Op : uint8_t {
   Do,
   Loop,
   PlusLoop,
+  ExecMarker, // carries sval_idx = name in Code::sv
 };
 
 // Compact 16-byte Ins. Hot fields: op(1)+pad(3)+ival(4)+ptr(8).
@@ -194,6 +195,7 @@ private:
 
   std::vector<uint8_t> heap;
   std::unordered_map<std::string, std::string> help_db;
+  int pad_addr = 0; // set in init_prims after heap reserve
   std::vector<std::vector<int>> lframes;
 
   int heap_get(int a) const {
@@ -503,6 +505,24 @@ private:
       case Op::LocalsExit:
         lframes.pop_back();
         break;
+      case Op::ExecMarker: {
+        const std::string &name = f.code->sval(ins.sval_idx);
+        auto it = marker_snaps.find(name);
+        if (it == marker_snaps.end())
+          throw std::runtime_error("marker: snap not found: " + name);
+        auto snap = it->second;
+        // Remove dict entries added after snapshot
+        for (int mi = snap.n_entries; mi < (int)entries.size(); mi++)
+          dict.erase(entries[mi].name);
+        // Truncate entries deque
+        while ((int)entries.size() > snap.n_entries)
+          entries.pop_back();
+        // Truncate heap
+        heap.resize(snap.heap_sz, 0);
+        // Remove this and later markers from snaps
+        marker_snaps.erase(name);
+        --cd; // pop this frame
+      } break;
       case Op::Do: {
         int s = pop(), l = pop();
         rpush(l);
@@ -795,6 +815,529 @@ private:
       std::cout << n << " ";
     std::cout << "\n";
   }
+  // -- Additional primitives ------------------------------------------------
+  static void pf_slashmod(Forth &f) {
+    int b = f.pop(), a = f.pop();
+    if (!b)
+      throw std::runtime_error("/mod: div by zero");
+    f.push(a % b);
+    f.push(a / b);
+  }
+  static void pf_starslash(Forth &f) {
+    int c = f.pop(), b = f.pop(), a = f.pop();
+    if (!c)
+      throw std::runtime_error("*/: div by zero");
+    f.push((int)((long long)a * b / c));
+  }
+  static void pf_starslashmod(Forth &f) {
+    int c = f.pop(), b = f.pop(), a = f.pop();
+    if (!c)
+      throw std::runtime_error("*/mod: div by zero");
+    long long p = (long long)a * b;
+    f.push((int)(p % c));
+    f.push((int)(p / c));
+  }
+  static void pf_roll(Forth &f) {
+    int n = f.pop();
+    if (n < 0 || n >= f.stack_top)
+      throw std::runtime_error("roll: out of range");
+    int val = f.stack_buf[f.stack_top - 1 - n];
+    for (int i = f.stack_top - 1 - n; i < f.stack_top - 1; i++)
+      f.stack_buf[i] = f.stack_buf[i + 1];
+    f.stack_top--;
+    f.push(val);
+  }
+  static void pf_lbracket(Forth &f) { f.set_state(0); }
+  static void pf_rbracket(Forth &f) { f.set_state(1); }
+  static void pf_catch(Forth &f) {
+    int id = f.pop();
+    int ss = f.stack_top, rs = f.rstack_top, cd = f.call_depth;
+    try {
+      f.run_entry(f.xt_to_entry(id));
+      f.push(0);
+    } catch (std::exception &e) {
+      f.stack_top = ss;
+      f.rstack_top = rs;
+      f.call_depth = cd;
+      f.string_table.push_back(e.what());
+      f.push((int)f.string_table.size() - 1);
+      f.push(-1);
+    }
+  }
+  static void pf_throw(Forth &f) {
+    int n = f.pop();
+    if (n == 0)
+      return;
+    if (n == -1 && f.stack_top > 0) {
+      int idx = f.pop();
+      std::string msg = (idx >= 0 && idx < (int)f.string_table.size())
+                            ? f.string_table[idx]
+                            : "error";
+      throw std::runtime_error(msg);
+    }
+    throw std::runtime_error("throw " + std::to_string(n));
+  }
+  static void pf_noop(Forth &) {}
+
+  // -- ANS core words -------------------------------------------------------
+  static void pf_2over(Forth &f) {
+    if (f.stack_top < 4)
+      throw std::runtime_error("2over: underflow");
+    int b = f.stack_buf[f.stack_top - 4], a = f.stack_buf[f.stack_top - 3];
+    f.push(b);
+    f.push(a);
+  }
+  static void pf_lt0(Forth &f) { f.push(f.pop() < 0 ? -1 : 0); }
+  static void pf_gt0(Forth &f) { f.push(f.pop() > 0 ? -1 : 0); }
+  static void pf_ne0(Forth &f) { f.push(f.pop() != 0 ? -1 : 0); }
+  static void pf_ne(Forth &f) {
+    int b = f.pop(), a = f.pop();
+    f.push(a != b ? -1 : 0);
+  }
+  static void pf_ult(Forth &f) {
+    unsigned b = (unsigned)f.pop(), a = (unsigned)f.pop();
+    f.push(a < b ? -1 : 0);
+  }
+  static void pf_ugt(Forth &f) {
+    unsigned b = (unsigned)f.pop(), a = (unsigned)f.pop();
+    f.push(a > b ? -1 : 0);
+  }
+  static void pf_charp(Forth &f) { f.push(f.pop() + 1); } // char+ : addr+1
+  static void pf_chars(Forth &f) { /* chars: n chars = n bytes, already 1:1 */ }
+  // count ( addr -- addr+1 n ) : counted string — addr[0] is length byte
+  static void pf_count(Forth &f) {
+    int a = f.pop();
+    if (a < 0 || a >= (int)f.heap.size())
+      throw std::runtime_error("count: bad addr");
+    int n = f.heap[a];
+    f.push(a + 1);
+    f.push(n);
+  }
+  // move ( src dst n -- ) : copy n bytes, handles overlap
+  static void pf_move(Forth &f) {
+    int n = f.pop(), dst = f.pop(), src = f.pop();
+    if (n < 0)
+      throw std::runtime_error("move: negative count");
+    if (n == 0)
+      return;
+    int need = std::max(src + n, dst + n);
+    if (src < 0 || dst < 0 || need > (int)f.heap.size())
+      throw std::runtime_error("move: bad range");
+    std::memmove(&f.heap[dst], &f.heap[src], n);
+  }
+  // cmove ( src dst n -- ) : copy forward (non-overlapping safe)
+  static void pf_cmove(Forth &f) {
+    int n = f.pop(), dst = f.pop(), src = f.pop();
+    if (n < 0)
+      throw std::runtime_error("cmove: negative count");
+    if (n == 0)
+      return;
+    int need = std::max(src + n, dst + n);
+    if (src < 0 || dst < 0 || need > (int)f.heap.size())
+      throw std::runtime_error("cmove: bad range");
+    std::copy(&f.heap[src], &f.heap[src] + n, &f.heap[dst]);
+  }
+  // cmove> ( src dst n -- ) : copy backward (for overlapping upward moves)
+  static void pf_cmovegt(Forth &f) {
+    int n = f.pop(), dst = f.pop(), src = f.pop();
+    if (n < 0)
+      throw std::runtime_error("cmove>: negative count");
+    if (n == 0)
+      return;
+    int need = std::max(src + n, dst + n);
+    if (src < 0 || dst < 0 || need > (int)f.heap.size())
+      throw std::runtime_error("cmove>: bad range");
+    std::copy_backward(&f.heap[src], &f.heap[src] + n, &f.heap[dst] + n);
+  }
+  // s>d ( n -- d_lo d_hi ) : sign-extend single to double
+  static void pf_s2d(Forth &f) {
+    int n = f.pop();
+    f.push(n);
+    f.push(n < 0 ? -1 : 0);
+  }
+  // d>s ( d_lo d_hi -- n ) : take low cell of double
+  static void pf_d2s(Forth &f) { f.pop(); } // discard high cell
+  // um* ( u1 u2 -- ud_lo ud_hi ) : unsigned 32x32->64 multiply
+  static void pf_umstar(Forth &f) {
+    unsigned long long r =
+        (unsigned long long)(unsigned)f.pop() * (unsigned)f.pop();
+    f.push((int)(r & 0xffffffff));
+    f.push((int)(r >> 32));
+  }
+  // um/mod ( ud_lo ud_hi u -- rem quot ) : unsigned 64/32->32 divide
+  static void pf_umslashmod(Forth &f) {
+    unsigned divisor = (unsigned)f.pop();
+    unsigned long long ud =
+        ((unsigned long long)(unsigned)f.pop() << 32) | (unsigned)f.pop();
+    if (!divisor)
+      throw std::runtime_error("um/mod: div by zero");
+    f.push((int)(ud % divisor));
+    f.push((int)(ud / divisor));
+  }
+  // sm/rem ( d_lo d_hi n -- rem quot ) : symmetric (truncated) signed 64/32
+  static void pf_smrem(Forth &f) {
+    long long divisor = f.pop();
+    long long hi = f.pop(), lo = (unsigned)f.pop();
+    long long d = (hi << 32) | lo;
+    if (!divisor)
+      throw std::runtime_error("sm/rem: div by zero");
+    f.push((int)(d % divisor));
+    f.push((int)(d / divisor));
+  }
+  // fm/mod ( d_lo d_hi n -- rem quot ) : floored signed 64/32
+  static void pf_fmmod(Forth &f) {
+    long long divisor = f.pop();
+    long long hi = f.pop(), lo = (unsigned)f.pop();
+    long long d = (hi << 32) | lo;
+    if (!divisor)
+      throw std::runtime_error("fm/mod: div by zero");
+    long long q = d / divisor, r = d % divisor;
+    if (r && ((r < 0) != (divisor < 0))) {
+      q--;
+      r += divisor;
+    }
+    f.push((int)r);
+    f.push((int)q);
+  }
+  // evaluate ( str-idx -- ) : execute a string as Forth source
+  static void pf_evaluate(Forth &f) {
+    int idx = f.pop();
+    if (idx < 0 || idx >= (int)f.string_table.size())
+      throw std::runtime_error("evaluate: bad string index");
+    f.process(f.split(f.string_table[idx]));
+  }
+  // 2>r ( a b -- ) (R: -- a b)
+  static void pf_2tor(Forth &f) {
+    int b = f.pop(), a = f.pop();
+    f.rpush(a);
+    f.rpush(b);
+  }
+  // 2r> ( -- a b ) (R: a b --)
+  static void pf_2rfrom(Forth &f) {
+    int b = f.rpop(), a = f.rpop();
+    f.push(a);
+    f.push(b);
+  }
+  // 2r@ ( -- a b ) (R: a b -- a b)
+  static void pf_2rat(Forth &f) {
+    if (f.rstack_top < 2)
+      throw std::runtime_error("2r@: underflow");
+    f.push(f.rstack_buf[f.rstack_top - 2]);
+    f.push(f.rstack_buf[f.rstack_top - 1]);
+  }
+
+  // -- Output formatting ----------------------------------------------------
+  // u. ( u -- ) print unsigned
+  static void pf_udot(Forth &f) {
+    unsigned u = (unsigned)f.pop();
+    // format in current base
+    int base = f.get_base();
+    if (!u) {
+      std::cout << "0 ";
+      return;
+    }
+    const char *d = "0123456789abcdef";
+    std::string r;
+    unsigned v = u;
+    while (v) {
+      r = d[v % base] + r;
+      v /= base;
+    }
+    std::cout << r << " ";
+  }
+  // .r ( n width -- ) print right-justified signed in field of width
+  static void pf_dotr(Forth &f) {
+    int w = f.pop(), n = f.pop();
+    std::string s = f.format_int(n, f.get_base());
+    int pad = (int)w - (int)s.size();
+    while (pad-- > 0)
+      std::cout << ' ';
+    std::cout << s;
+  }
+  // u.r ( u width -- ) print right-justified unsigned
+  static void pf_udotr(Forth &f) {
+    int w = f.pop();
+    unsigned u = (unsigned)f.pop();
+    int base = f.get_base();
+    std::string s;
+    if (!u)
+      s = "0";
+    else {
+      const char *d = "0123456789abcdef";
+      unsigned v = u;
+      while (v) {
+        s = d[v % base] + s;
+        v /= base;
+      }
+    }
+    int pad = (int)w - (int)s.size();
+    while (pad-- > 0)
+      std::cout << ' ';
+    std::cout << s;
+  }
+  // d. ( lo hi -- ) print double-cell signed
+  static void pf_ddot(Forth &f) {
+    long long hi = f.pop();
+    long long lo = (unsigned)f.pop();
+    long long d = (hi << 32) | lo;
+    int base = f.get_base();
+    if (!d) {
+      std::cout << "0 ";
+      return;
+    }
+    bool neg = d < 0;
+    unsigned long long u = neg ? -(unsigned long long)d : (unsigned long long)d;
+    const char *digs = "0123456789abcdef";
+    std::string r;
+    while (u) {
+      r = digs[u % base] + r;
+      u /= base;
+    }
+    std::cout << (neg ? "-" : "") << r << " ";
+  }
+  // d.r ( lo hi width -- ) right-justified double-cell
+  static void pf_ddotr(Forth &f) {
+    int w = f.pop();
+    long long hi = f.pop();
+    long long lo = (unsigned)f.pop();
+    long long d = (hi << 32) | lo;
+    int base = f.get_base();
+    std::string s;
+    if (!d)
+      s = "0";
+    else {
+      bool neg = d < 0;
+      unsigned long long u =
+          neg ? -(unsigned long long)d : (unsigned long long)d;
+      const char *digs = "0123456789abcdef";
+      while (u) {
+        s = digs[u % base] + s;
+        u /= base;
+      }
+      if (neg)
+        s = "-" + s;
+    }
+    int pad = w - (int)s.size();
+    while (pad-- > 0)
+      std::cout << ' ';
+    std::cout << s;
+  }
+  // bl ( -- 32 )
+  static void pf_bl(Forth &f) { f.push(32); }
+  // space ( -- ) emit one space
+  static void pf_space(Forth &f) { std::cout << ' '; }
+  // spaces ( n -- ) emit n spaces
+  static void pf_spaces(Forth &f) {
+    int n = f.pop();
+    while (n-- > 0)
+      std::cout << ' ';
+  }
+
+  // -- Memory ----------------------------------------------------------------
+  // erase ( addr n -- ) fill n bytes with zero
+  static void pf_erase(Forth &f) {
+    int n = f.pop(), a = f.pop();
+    if (n < 0)
+      throw std::runtime_error("erase: negative count");
+    if (a < 0 || a + n > (int)f.heap.size())
+      throw std::runtime_error("erase: bad range");
+    std::fill(f.heap.begin() + a, f.heap.begin() + a + n, 0);
+  }
+  // blank ( addr n -- ) fill n bytes with spaces
+  static void pf_blank(Forth &f) {
+    int n = f.pop(), a = f.pop();
+    if (n < 0)
+      throw std::runtime_error("blank: negative count");
+    if (a < 0 || a + n > (int)f.heap.size())
+      throw std::runtime_error("blank: bad range");
+    std::fill(f.heap.begin() + a, f.heap.begin() + a + n, (uint8_t)32);
+  }
+  // pad ( -- addr ) return address of scratch pad (64 bytes above here, fixed)
+  static void pf_pad(Forth &f) {
+    // We keep a fixed pad region at base of heap offset 8 (after base+state)
+    // Actually simpler: allocate pad lazily as a fixed heap region
+    f.push(f.pad_addr);
+  }
+  // unused ( -- n ) bytes available in heap (we use a generous fake)
+  static void pf_unused(Forth &f) { f.push(1 << 20); }
+  // compare ( addr1 n1 addr2 n2 -- -1|0|1 )
+  static void pf_compare(Forth &f) {
+    int n2 = f.pop(), a2 = f.pop(), n1 = f.pop(), a1 = f.pop();
+    int n = std::min(n1, n2);
+    for (int i = 0; i < n; i++) {
+      uint8_t c1 = f.heap[a1 + i], c2 = f.heap[a2 + i];
+      if (c1 < c2) {
+        f.push(-1);
+        return;
+      }
+      if (c1 > c2) {
+        f.push(1);
+        return;
+      }
+    }
+    if (n1 < n2) {
+      f.push(-1);
+      return;
+    }
+    if (n1 > n2) {
+      f.push(1);
+      return;
+    }
+    f.push(0);
+  }
+  // within ( n lo hi -- flag ) lo <= n < hi
+  static void pf_within(Forth &f) {
+    int hi = f.pop(), lo = f.pop(), n = f.pop();
+    f.push((n >= lo && n < hi) ? -1 : 0);
+  }
+  // bounds ( addr n -- addr+n addr ) for use in DO loop
+  static void pf_bounds(Forth &f) {
+    int n = f.pop(), a = f.pop();
+    f.push(a + n);
+    f.push(a);
+  }
+  // abort ( -- ) throw standard abort exception
+  static void pf_abort(Forth &f) {
+    (void)f;
+    throw std::runtime_error("abort");
+  }
+  // abort" is handled in process() as a string-consuming immediate
+  // quit ( -- ) restart interpreter (simplified: just throw)
+  static void pf_quit(Forth &f) {
+    (void)f;
+    throw std::runtime_error("quit");
+  }
+
+  // -- Marker / forget -------------------------------------------------------
+  // We store marker snapshots in a separate map keyed by name.
+  // marker saves: entries.size(), dict snapshot, heap.size()
+  // Forgetting a marker re-truncates entries and heap and rebuilds dict.
+  struct MarkerSnap {
+    int n_entries;
+    int heap_sz;
+  };
+  std::unordered_map<std::string, MarkerSnap> marker_snaps;
+
+  static void exec_marker(Forth &f, const std::string &name) {
+    auto it = f.marker_snaps.find(name);
+    if (it == f.marker_snaps.end())
+      throw std::runtime_error("marker: snap not found for " + name);
+    auto &snap = it->second;
+    // remove dict entries added after snapshot
+    for (int i = snap.n_entries; i < (int)f.entries.size(); i++)
+      f.dict.erase(f.entries[i].name);
+    // truncate entries deque
+    while ((int)f.entries.size() > snap.n_entries)
+      f.entries.pop_back();
+    // truncate heap
+    f.heap.resize(snap.heap_sz, 0);
+    // remove this marker and all later markers
+    f.marker_snaps.erase(name);
+  }
+
+  // action-of ( "name" -- xt ) get current xt of a deferred word
+  // (handled at parse level, similar to ')
+  static void pf_action_of_dummy(Forth &) {
+  } // placeholder — real work in process()
+
+  // body> ( body-addr -- xt ) inverse of >body: find Entry with this body_addr
+  static void pf_bodyfrom(Forth &f) {
+    int ba = f.pop();
+    for (auto &e : f.entries) {
+      if (e.kind == Entry::CREATE && e.body_addr == ba) {
+        f.push(e.id);
+        return;
+      }
+    }
+    throw std::runtime_error("body>: no entry found for body addr " +
+                             std::to_string(ba));
+  }
+
+  // ?dup ( n -- n n | 0 ) dup if non-zero
+  static void pf_qdup(Forth &f) {
+    if (f.stack_top == 0)
+      throw std::runtime_error("?dup: underflow");
+    if (f.stack_buf[f.stack_top - 1])
+      f.push(f.stack_buf[f.stack_top - 1]);
+  }
+
+  // 2nip ( a b c d -- c d )
+  static void pf_2nip(Forth &f) {
+    if (f.stack_top < 4)
+      throw std::runtime_error("2nip: underflow");
+    f.stack_buf[f.stack_top - 4] = f.stack_buf[f.stack_top - 2];
+    f.stack_buf[f.stack_top - 3] = f.stack_buf[f.stack_top - 1];
+    f.stack_top -= 2;
+  }
+
+  // Pictured numeric output: <# # #s sign #>
+  // We build the output string right-to-left in a pic_buf
+  std::string pic_buf;
+  // <# ( -- ) start pictured output
+  static void pf_picstart(Forth &f) { f.pic_buf.clear(); }
+  // # ( ud_lo ud_hi -- ud_lo' ud_hi' ) extract one digit
+  static void pf_picdigit(Forth &f) {
+    unsigned long long hi = (unsigned)f.pop(), lo = (unsigned)f.pop();
+    unsigned long long ud = (hi << 32) | lo;
+    int base = f.get_base();
+    const char *digs = "0123456789abcdef";
+    f.pic_buf = digs[ud % base] + f.pic_buf;
+    ud /= base;
+    f.push((int)(ud & 0xffffffff));
+    f.push((int)(ud >> 32));
+  }
+  // #s ( ud_lo ud_hi -- 0 0 ) extract all remaining digits
+  static void pf_picdigits(Forth &f) {
+    unsigned long long hi = (unsigned)f.pop(), lo = (unsigned)f.pop();
+    unsigned long long ud = (hi << 32) | lo;
+    int base = f.get_base();
+    const char *digs = "0123456789abcdef";
+    do {
+      f.pic_buf = digs[ud % base] + f.pic_buf;
+      ud /= base;
+    } while (ud);
+    f.push(0);
+    f.push(0);
+  }
+  // sign ( n -- ) prepend minus if n<0
+  static void pf_picsign(Forth &f) {
+    if (f.pop() < 0)
+      f.pic_buf = "-" + f.pic_buf;
+  }
+  // hold ( char -- ) prepend char to picture
+  static void pf_hold(Forth &f) { f.pic_buf = (char)f.pop() + f.pic_buf; }
+  // holds ( str-idx -- ) prepend string to picture
+  static void pf_holds(Forth &f) {
+    int idx = f.pop();
+    if (idx < 0 || idx >= (int)f.string_table.size())
+      throw std::runtime_error("holds: bad idx");
+    f.pic_buf = f.string_table[idx] + f.pic_buf;
+  }
+  // #> ( ud_lo ud_hi -- addr n ) end picture, push string as c-addr/len pair
+  //    We push the result as a string-table entry + length for simplicity
+  static void pf_picend(Forth &f) {
+    f.pop();
+    f.pop(); // discard remaining ud
+    f.string_table.push_back(f.pic_buf);
+    int idx = (int)f.string_table.size() - 1;
+    f.pic_buf.clear();
+    // push addr=idx, n=len — callers use TYPE to print
+    // ANS: #> leaves c-addr u; we emulate with our string model
+    // push the idx as a pseudo c-addr and the length separately
+    f.push(idx);
+    f.push((int)f.string_table[idx].size());
+  }
+
+  // sp@ ( -- addr ) stack pointer (index)
+  static void pf_spat(Forth &f) { f.push(f.stack_top); }
+  // sp! ( addr -- ) restore stack pointer
+  static void pf_spstore(Forth &f) {
+    int n = f.pop();
+    if (n < 0 || n > STACK_SIZE)
+      throw std::runtime_error("sp!: bad");
+    f.stack_top = n;
+  }
+
   static void pf_i(Forth &f) { f.push(f.rstack_buf[f.rstack_top - 1]); }
   static void pf_j(Forth &f) {
     if (f.rstack_top < 3)
@@ -850,6 +1393,21 @@ private:
     f.prog.push(mki(Op::Do));
     f.cstack.push_back((int)f.prog.ins.size());
     f.leave_stack.push_back({});
+  }
+  static void pf_qdo(Forth &f) {
+    f.prog.push(mki(Op::Over));
+    f.prog.push(mki(Op::Over));
+    f.prog.push(mki(Op::Eq));
+    f.prog.push(mki(Op::ZBranch, 0));
+    int zbr = (int)f.prog.ins.size() - 1;
+    f.prog.push(mki(Op::Drop));
+    f.prog.push(mki(Op::Drop));
+    f.prog.push(mki(Op::Branch, 0));
+    int skip = (int)f.prog.ins.size() - 1;
+    f.prog.ins[zbr].ival = (int)f.prog.ins.size();
+    f.prog.push(mki(Op::Do));
+    f.cstack.push_back((int)f.prog.ins.size());
+    f.leave_stack.push_back({skip});
   }
   static void pf_loop(Forth &f) {
     int a = f.cstack.back();
@@ -1023,6 +1581,80 @@ private:
     prim("help-set", pf_help_set);
     prim("bye", pf_bye);
     prim("words", pf_words);
+    // >body ( xt -- body-addr ) : given xt, push body address of CREATE word
+    prim(">body", [](Forth &f) {
+      int id = f.pop();
+      Entry &e = f.xt_to_entry(id);
+      if (e.kind != Entry::CREATE)
+        throw std::runtime_error(">body: not a CREATE word");
+      f.push(e.body_addr);
+    });
+    prim("/mod", pf_slashmod);
+    prim("*/", pf_starslash);
+    prim("*/mod", pf_starslashmod);
+    prim("roll", pf_roll);
+    prim("[", pf_lbracket, true);
+    prim("]", pf_rbracket);
+    // literal: compile-time, pops TOS and emits as Lit
+    prim("literal", [](Forth &f) { f.prog.push(mki(Op::Lit, f.pop())); }, true);
+    prim("catch", pf_catch);
+    prim("throw", pf_throw);
+    prim("noop", pf_noop);
+    prim("2over", pf_2over);
+    prim("0<", pf_lt0);
+    prim("0>", pf_gt0);
+    prim("0<>", pf_ne0);
+    prim("<>", pf_ne);
+    prim("u<", pf_ult);
+    prim("u>", pf_ugt);
+    prim("char+", pf_charp);
+    prim("chars", pf_chars);
+    prim("count", pf_count);
+    prim("move", pf_move);
+    prim("cmove", pf_cmove);
+    prim("cmove>", pf_cmovegt);
+    prim("s>d", pf_s2d);
+    prim("d>s", pf_d2s);
+    prim("um*", pf_umstar);
+    prim("um/mod", pf_umslashmod);
+    prim("sm/rem", pf_smrem);
+    prim("fm/mod", pf_fmmod);
+    prim("evaluate", pf_evaluate);
+    prim("2>r", pf_2tor);
+    prim("2r>", pf_2rfrom);
+    prim("2r@", pf_2rat);
+    prim("u.", pf_udot);
+    prim(".r", pf_dotr);
+    prim("u.r", pf_udotr);
+    prim("d.", pf_ddot);
+    prim("d.r", pf_ddotr);
+    prim("bl", pf_bl);
+    prim("space", pf_space);
+    prim("spaces", pf_spaces);
+    prim("erase", pf_erase);
+    prim("blank", pf_blank);
+    prim("pad", pf_pad);
+    prim("unused", pf_unused);
+    prim("compare", pf_compare);
+    prim("within", pf_within);
+    prim("bounds", pf_bounds);
+    prim("abort", pf_abort);
+    prim("quit", pf_quit);
+    prim("?dup", pf_qdup);
+    prim("2nip", pf_2nip);
+    prim("body>", pf_bodyfrom);
+    prim("<#", pf_picstart);
+    prim("#", pf_picdigit);
+    prim("#s", pf_picdigits);
+    prim("sign", pf_picsign);
+    prim("hold", pf_hold);
+    prim("holds", pf_holds);
+    prim("#>", pf_picend);
+    prim("sp@", pf_spat);
+    prim("sp!", pf_spstore);
+    // init pad: reserve 84 bytes above heap for pad scratch area
+    pad_addr = (int)heap.size();
+    heap.resize(pad_addr + 84, 0);
     prim("i", pf_i);
     prim("j", pf_j);
     prim("unloop", pf_unloop);
@@ -1035,6 +1667,7 @@ private:
     prim("while", pf_while, true);
     prim("repeat", pf_repeat, true);
     prim("do", pf_do, true);
+    prim("?do", pf_qdo, true);
     prim("loop", pf_loop, true);
     prim("+loop", pf_ploop, true);
     prim("leave", pf_leave, true);
@@ -1121,6 +1754,10 @@ private:
         break;
       case Op::LocalsExit:
         break;
+      case Op::ExecMarker:
+        std::cout << "  [marker restore: "
+                  << (ins.sval_idx >= 0 ? c.sv[ins.sval_idx] : "?") << "]\n";
+        break;
       case Op::Do:
         std::cout << "  do\n";
         break;
@@ -1155,6 +1792,24 @@ private:
           push((int)string_table.size() - 1);
         } else
           prog.push_s(mki(Op::PushStr), s);
+        continue;
+      }
+      if (t == "abort\"") {
+        auto [s, ni] = collect_string(tokens, i, '"');
+        i = ni;
+        if (!get_state()) {
+          // interpret mode: if stack non-empty and nonzero, abort with message
+          if (stack_top > 0 && pop() != 0)
+            throw std::runtime_error(s);
+        } else {
+          // compile mode: compile (if TOS nonzero) throw message
+          // emit: ZBranch over (throw StrLit)
+          int skip_pos = (int)prog.ins.size();
+          prog.push(mki(Op::ZBranch, 0));
+          prog.push_s(mki(Op::PushStr), s);
+          prog.push_s(mki(Op::Call), "throw-str");
+          prog.ins[skip_pos].ival = (int)prog.ins.size();
+        }
         continue;
       }
       if (t == ".\"" || t == ".(") {
@@ -1249,6 +1904,35 @@ private:
         continue;
       }
       if (!get_state()) {
+        if (t == "marker") {
+          std::string mname = lower(tokens[++i]);
+          // Save snapshot
+          marker_snaps[mname] = {static_cast<int>(entries.size()),
+                                 static_cast<int>(heap.size())};
+          // Build a Code that contains a single ExecMarker instruction
+          Code mc;
+          Ins mi;
+          mi.op = Op::ExecMarker;
+          mc.push_s(mi, mname);
+          Ins ex;
+          ex.op = Op::Exit;
+          mc.push(ex);
+          // Register as a WORD
+          Entry me;
+          me.kind = Entry::WORD;
+          me.code = mc;
+          register_entry(mname, me);
+          continue;
+        }
+        if (t == "is") {
+          int xt = pop();
+          std::string name = lower(tokens[++i]);
+          Entry *e = find(name);
+          if (!e || e->kind != Entry::CREATE)
+            throw std::runtime_error("is: " + name + " is not a deferred word");
+          heap_set(e->body_addr, xt);
+          continue;
+        }
         if (t == "include") {
           load_file(tokens[++i]);
           continue;
@@ -1370,6 +2054,16 @@ private:
           continue;
         }
       }
+      if (t == "is") {
+        // immediate even in compile mode: xt is wordname
+        int xt = pop();
+        std::string name = lower(tokens[++i]);
+        Entry *e = find(name);
+        if (!e || e->kind != Entry::CREATE)
+          throw std::runtime_error("is: " + name + " is not a deferred word");
+        heap_set(e->body_addr, xt);
+        continue;
+      }
       if (t == current) {
         prog.push_s(mki(Op::Call), t);
         continue;
@@ -1428,10 +2122,21 @@ private:
       if (line.empty() || (line.size() > 1 && line[0] == '#' && line[1] == '!'))
         continue;
       acc += (acc.empty() ? "" : " ") + line;
+      // Count quotes, ignoring \ line-comment portions
       int q = 0;
-      for (char c : acc)
-        if (c == '"')
-          q++;
+      {
+        bool in_comment = false;
+        for (int ci = 0; ci < (int)acc.size(); ci++) {
+          if (acc[ci] == '\\' && ci + 1 < (int)acc.size() &&
+              acc[ci + 1] == ' ') {
+            in_comment = true;
+          }
+          if (acc[ci] == '\n')
+            in_comment = false;
+          if (!in_comment && acc[ci] == '"')
+            q++;
+        }
+      }
       if (q % 2 == 0) {
         process(split(acc));
         acc.clear();
