@@ -1055,6 +1055,18 @@ private:
         continue;
       }
 
+      // ['] -- compile-time tick, always emits xt as literal
+      // Valid in both modes for convenience (interpret mode just pushes like ')
+      if (t == "[']") {
+        std::string name = lower(tokens[++i]);
+        int id = name_to_xt(name);
+        if (get_state())
+          emit_ins(make(Op::Lit, id));
+        else
+          push(id);
+        continue;
+      }
+
       // help -- works in both modes
       if (t == "help") {
         if (i + 1 >= (int)tokens.size() || tokens[i + 1] == ";") {
