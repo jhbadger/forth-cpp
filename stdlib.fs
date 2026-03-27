@@ -3,6 +3,7 @@
 : variable create 0 , does> ;
 : constant create , does> @ ;
 : ?        @ . ;
+: c?       c@ . ;
 : +!       dup @ rot + swap ! ;
 
 \ -- Boolean constants -------------------------------------------------
@@ -95,6 +96,13 @@ s" ( addr -- )
 Fetches and prints the value at addr.
 Shorthand for @ .
 Example: variable x  42 x !  x ?"
+help-set
+
+s" c?"
+s" ( addr -- )
+Fetches and prints the byte at addr.
+Shorthand for c@ .
+Example: variable x  42 x c!  x c?"
 help-set
 
 s" +!"

@@ -753,6 +753,16 @@ private:
       std::cout << " " << (int)f.heap[i];
     }
     std::cout << "\n";
+  }	
+  static void pf_celldump(Forth &f) {
+    int l = f.pop(), a = f.pop();
+    std::cout << a << " :";
+    for (int i = a; i < a + CELL*l; i+=CELL) {
+      if (i < 0 || i >= (int)f.heap.size())
+        throw std::runtime_error("dump: range");
+      std::cout << " " << f.heap_get(i);
+    }
+    std::cout << "\n";
   }
   static void pf_create_nop(Forth &) {}
   static void pf_state(Forth &f) { f.push(f.state_addr); }
@@ -1573,6 +1583,7 @@ private:
     prim("allot", pf_allot);
     prim("fill", pf_fill);
     prim("dump", pf_dump);
+		prim("celldump", pf_celldump);
     prim("create", pf_create_nop);
     prim("state", pf_state);
     prim("immediate", pf_imm);

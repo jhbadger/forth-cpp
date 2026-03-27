@@ -474,6 +474,10 @@ dump
   ( addr len -- )
   Prints len bytes starting at addr as decimal values.
 
+celldump
+  ( addr len -- )
+  Prints len cells starting at addr as decimal values.
+
 pad
   ( -- addr )
   Pushes address of the scratch pad area (84 bytes above system area).
