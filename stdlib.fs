@@ -4,20 +4,6 @@
 : constant create , does> @ ;
 : ?        @ . ;
 : +!       dup @ rot + swap ! ;
-\ array: allocates n cells, created word pushes base address
-\ use: n array myarr  then  myarr = base addr,  n myarr arr@ = element addr
-: array    create cells allot does> ;
-: arr@     ( idx arr-addr -- elem-addr )  swap cells + ;
-
-: print-array
-  0 do
-    dup i cells +
-    @ .
-  loop
-  drop ;
-
-s" print-array"
-s" ( addr len -- ) prints content of array starting from addr" help-set
 
 \ -- Boolean constants -------------------------------------------------
 -1 constant true
@@ -115,22 +101,6 @@ s" +!"
 s" ( n addr -- )
 Adds n to the value stored at addr.
 Example: variable counter  1 counter +!"
-help-set
-
-s" array"
-s" ( n -- )
-Creates an array of n cells. The created word pushes the base address.
-Use arr@ for indexed element addresses.
-Example: 10 array scores
-         42 0 scores arr@ !    ( store 42 at index 0 )
-         0 scores arr@ @  .    ( fetch index 0 => 42 )
-         scores 10 print-array ( print all 10 elements )"
-help-set
-
-s" arr@"
-s" ( idx addr -- elem-addr )
-Computes the address of element idx in an array at addr.
-Example: 3 scores arr@ @  ( fetch element 3 )"
 help-set
 
 s" true"
